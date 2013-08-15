@@ -663,7 +663,8 @@
         ['exclude', 'store/.*$']
       ],
       'conditions': [
-        ['target_arch!="ia32" and target_arch!="x64"', {
+        # We force no asm on Mac OS X due to build issues
+        ['OS=="mac" or (target_arch!="ia32" and target_arch!="x64")', {
           # Disable asm
           'defines': [
             'OPENSSL_NO_ASM'
@@ -776,10 +777,6 @@
                 'asm/x86-macosx-gas/whrlpool/wp-mmx.s',
                 'asm/x86-macosx-gas/x86cpuid.s',
                 'openssl/crypto/whrlpool/wp_block.c'
-              ],
-              # Disable asm (causes error on mac)
-              'defines': [
-                'OPENSSL_NO_ASM'
               ],
             }],
             ['OS=="mac" and target_arch=="x64"', {

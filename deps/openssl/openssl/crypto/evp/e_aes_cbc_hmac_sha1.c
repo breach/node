@@ -150,7 +150,7 @@ static void sha1_update(SHA_CTX *c,const void *data,size_t len)
 	if ((res = c->num)) {
 		res = SHA_CBLOCK-res;
 		if (len<res) res=len;
-		SHA1_Update (c,ptr,res);
+		OpenSSL_Sha1_Update (c,ptr,res);
 		ptr += res;
 		len -= res;
 	}
@@ -168,13 +168,13 @@ static void sha1_update(SHA_CTX *c,const void *data,size_t len)
 	}
 
 	if (res)
-		SHA1_Update(c,ptr,res);
+		OpenSSL_Sha1_Update(c,ptr,res);
 }
 
-#ifdef SHA1_Update
-#undef SHA1_Update
+#ifdef OpenSSL_Sha1_Update
+#undef OpenSSL_Sha1_Update
 #endif
-#define SHA1_Update sha1_update
+#define OpenSSL_Sha1_Update sha1_update
 
 static int aesni_cbc_hmac_sha1_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
 		      const unsigned char *in, size_t len)
@@ -205,7 +205,7 @@ static int aesni_cbc_hmac_sha1_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
 
 #if defined(STITCHED_CALL)
 		if (plen>(sha_off+iv) && (blocks=(plen-(sha_off+iv))/SHA_CBLOCK)) {
-			SHA1_Update(&key->md,in+iv,sha_off);
+			OpenSSL_Sha1_Update(&key->md,in+iv,sha_off);
 
 			aesni_cbc_sha1_enc(in,out,blocks,&key->ks,
 				ctx->iv,&key->md,in+iv+sha_off);
@@ -220,7 +220,7 @@ static int aesni_cbc_hmac_sha1_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
 		}
 #endif
 		sha_off += iv;
-		SHA1_Update(&key->md,in+sha_off,plen-sha_off);
+		OpenSSL_Sha1_Update(&key->md,in+sha_off,plen-sha_off);
 
 		if (plen!=len)	{	/* "TLS" mode of operation */
 			if (in!=out)
@@ -229,7 +229,7 @@ static int aesni_cbc_hmac_sha1_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
 			/* calculate HMAC and append it to payload */
 			SHA1_Final(out+plen,&key->md);
 			key->md = key->tail;
-			SHA1_Update(&key->md,out+plen,SHA_DIGEST_LENGTH);
+			OpenSSL_Sha1_Update(&key->md,out+plen,SHA_DIGEST_LENGTH);
 			SHA1_Final(out+plen,&key->md);
 
 			/* pad the payload|hmac */
@@ -288,14 +288,14 @@ static int aesni_cbc_hmac_sha1_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
 
 			/* calculate HMAC */
 			key->md = key->head;
-			SHA1_Update(&key->md,key->aux.tls_aad,plen);
+			OpenSSL_Sha1_Update(&key->md,key->aux.tls_aad,plen);
 
 #if 1
 			len -= SHA_DIGEST_LENGTH;		/* amend mac */
 			if (len>=(256+SHA_CBLOCK)) {
 				j = (len-(256+SHA_CBLOCK))&(0-SHA_CBLOCK);
 				j += SHA_CBLOCK-key->md.num;
-				SHA1_Update(&key->md,out,j);
+				OpenSSL_Sha1_Update(&key->md,out,j);
 				out += j;
 				len -= j;
 				inp_len -= j;
@@ -382,7 +382,7 @@ static int aesni_cbc_hmac_sha1_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
 #endif
 			len += SHA_DIGEST_LENGTH;
 #else
-			SHA1_Update(&key->md,out,inp_len);
+			OpenSSL_Sha1_Update(&key->md,out,inp_len);
 			res = key->md.num;
 			SHA1_Final(pmac->c,&key->md);
 
@@ -400,7 +400,7 @@ static int aesni_cbc_hmac_sha1_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
 			}
 #endif
 			key->md = key->tail;
-			SHA1_Update(&key->md,pmac->c,SHA_DIGEST_LENGTH);
+			OpenSSL_Sha1_Update(&key->md,pmac->c,SHA_DIGEST_LENGTH);
 			SHA1_Final(pmac->c,&key->md);
 
 			/* verify HMAC */
@@ -443,7 +443,7 @@ static int aesni_cbc_hmac_sha1_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
 #endif
 			return ret;
 		} else {
-			SHA1_Update(&key->md,out,len);
+			OpenSSL_Sha1_Update(&key->md,out,len);
 		}
 	}
 
@@ -465,7 +465,7 @@ static int aesni_cbc_hmac_sha1_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg, void
 
 		if (arg > (int)sizeof(hmac_key)) {
 			SHA1_Init(&key->head);
-			SHA1_Update(&key->head,ptr,arg);
+			OpenSSL_Sha1_Update(&key->head,ptr,arg);
 			SHA1_Final(hmac_key,&key->head);
 		} else {
 			memcpy(hmac_key,ptr,arg);
@@ -474,12 +474,12 @@ static int aesni_cbc_hmac_sha1_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg, void
 		for (i=0;i<sizeof(hmac_key);i++)
 			hmac_key[i] ^= 0x36;		/* ipad */
 		SHA1_Init(&key->head);
-		SHA1_Update(&key->head,hmac_key,sizeof(hmac_key));
+		OpenSSL_Sha1_Update(&key->head,hmac_key,sizeof(hmac_key));
 
 		for (i=0;i<sizeof(hmac_key);i++)
 			hmac_key[i] ^= 0x36^0x5c;	/* opad */
 		SHA1_Init(&key->tail);
-		SHA1_Update(&key->tail,hmac_key,sizeof(hmac_key));
+		OpenSSL_Sha1_Update(&key->tail,hmac_key,sizeof(hmac_key));
 
 		OPENSSL_cleanse(hmac_key,sizeof(hmac_key));
 
@@ -499,7 +499,7 @@ static int aesni_cbc_hmac_sha1_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg, void
 				p[arg-1] = len;
 			}
 			key->md = key->head;
-			SHA1_Update(&key->md,p,arg);
+			OpenSSL_Sha1_Update(&key->md,p,arg);
 
 			return (int)(((len+SHA_DIGEST_LENGTH+AES_BLOCK_SIZE)&-AES_BLOCK_SIZE)
 				- len);

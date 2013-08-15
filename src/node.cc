@@ -3140,6 +3140,20 @@ static char **copy_argv(int argc, char **argv) {
   return argv_copy;
 }
 
+void SetupBindingCache() {
+  binding_cache.Reset(Isolate::GetCurrent(), Object::New());
+}
+
+void InitSetup(int argc, char *argv[]) {
+  // This needs to run *before* V8::Initialize()
+  // Use copy here as to not modify the original argv:
+  Init(argc, argv);
+
+  // Apparently we need to reassign this one
+  // TODO(spolu): figure out why?
+  node_isolate = Isolate::GetCurrent();
+}
+
 int Start(int argc, char *argv[]) {
   // Hack aroung with the argv pointer. Used for process.title = "blah".
   argv = uv_setup_args(argc, argv);

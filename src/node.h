@@ -118,13 +118,26 @@ NODE_EXTERN extern bool no_deprecation;
 
 NODE_EXTERN int Start(int argc, char *argv[]);
 
-void InitSetup(int argc, char *argv[]);
-char** Init(int argc, char *argv[]);
-v8::Handle<v8::Object> SetupProcessObject(int argc, char *argv[]);
-void SetupBindingCache();
-void Load(v8::Handle<v8::Object> process);
-void EmitExit(v8::Handle<v8::Object> process);
-void RunAtExit();
+void Init(int* argc, 
+          const char** argv,
+          int* exec_argc, 
+          const char*** exec_argv);
+
+void SetupIsolate();
+
+class Environment;
+
+Environment* CreateEnvironment(v8::Isolate* isolate,
+                               int argc,
+                               const char* const* argv,
+                               int exec_argc,
+                               const char* const* exec_argv,
+                               v8::ExtensionConfiguration* extensions);
+v8::Local<v8::Context> EnvironmentContext(Environment*);
+v8::Isolate* EnvironmentIsolate(Environment*);
+
+void EmitExit(Environment *env);
+void RunAtExit(Environment *env);
 
 /* Converts a unixtime to V8 Date */
 #define NODE_UNIXTIME_V8(t) v8::Date::New(1000*static_cast<double>(t))

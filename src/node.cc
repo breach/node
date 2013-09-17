@@ -116,6 +116,7 @@ using v8::Uint32;
 using v8::V8;
 using v8::Value;
 using v8::kExternalUnsignedIntArray;
+using v8::ExtensionConfiguration;
 
 // FIXME(bnoordhuis) Make these per-context?
 QUEUE handle_wrap_queue = { &handle_wrap_queue, &handle_wrap_queue };
@@ -3186,10 +3187,11 @@ Environment* CreateEnvironment(Isolate* isolate,
                                int argc,
                                const char* const* argv,
                                int exec_argc,
-                               const char* const* exec_argv) {
+                               const char* const* exec_argv,
+                               ExtensionConfiguration *extensions) {
   HandleScope handle_scope(isolate);
 
-  Local<Context> context = Context::New(isolate);
+  Local<Context> context = Context::New(isolate, extensions);
   Context::Scope context_scope(context);
   Environment* env = Environment::New(context);
 
@@ -3210,17 +3212,16 @@ Environment* CreateEnvironment(Isolate* isolate,
   return env;
 }
 
-void SetupBindingCache() {
-  binding_cache.Reset(Isolate::GetCurrent(), Object::New());
+v8::Local<v8::Context> EnvironmentContext(Environment *env) {
+  return env->context();
 }
 
-void InitSetup(int argc, char *argv[]) {
-  // This needs to run *before* V8::Initialize()
-  // Use copy here as to not modify the original argv:
-  Init(argc, argv);
+v8::Isolate* EnvironmentIsolate(Environment *env) {
+  return env->isolate();
+}
 
-  // Apparently we need to reassign this one
-  // TODO(spolu): figure out why?
+void SetupIsolate() {
+  // Needs to be setup here again
   node_isolate = Isolate::GetCurrent();
 }
 
@@ -3240,7 +3241,7 @@ int Start(int argc, char** argv) {
   {
     Locker locker(node_isolate);
     Environment* env =
-        CreateEnvironment(node_isolate, argc, argv, exec_argc, exec_argv);
+        CreateEnvironment(node_isolate, argc, argv, exec_argc, exec_argv, NULL);
     Context::Scope context_scope(env->context());
     HandleScope handle_scope(env->isolate());
     uv_run(env->event_loop(), UV_RUN_DEFAULT);

@@ -22,11 +22,11 @@
 #ifndef SRC_STREAM_WRAP_H_
 #define SRC_STREAM_WRAP_H_
 
-#include "v8.h"
-#include "node.h"
+#include "env.h"
 #include "handle_wrap.h"
 #include "req_wrap.h"
 #include "string_bytes.h"
+#include "v8.h"
 
 namespace node {
 
@@ -37,8 +37,8 @@ typedef class ReqWrap<uv_shutdown_t> ShutdownWrap;
 
 class WriteWrap: public ReqWrap<uv_write_t> {
  public:
-  WriteWrap(v8::Local<v8::Object> obj, StreamWrap* wrap)
-      : ReqWrap<uv_write_t>(obj)
+  WriteWrap(Environment* env, v8::Local<v8::Object> obj, StreamWrap* wrap)
+      : ReqWrap<uv_write_t>(env, obj)
       , wrap_(wrap) {
   }
 
@@ -79,10 +79,12 @@ class StreamWrapCallbacks {
                       uv_stream_t* send_handle,
                       uv_write_cb cb);
   virtual void AfterWrite(WriteWrap* w);
-  virtual uv_buf_t DoAlloc(uv_handle_t* handle, size_t suggested_size);
+  virtual void DoAlloc(uv_handle_t* handle,
+                       size_t suggested_size,
+                       uv_buf_t* buf);
   virtual void DoRead(uv_stream_t* handle,
                       ssize_t nread,
-                      uv_buf_t buf,
+                      const uv_buf_t* buf,
                       uv_handle_type pending);
   virtual int DoShutdown(ShutdownWrap* req_wrap, uv_shutdown_cb cb);
 
@@ -105,8 +107,6 @@ class StreamWrap : public HandleWrap {
     if (old != &default_callbacks_)
       delete old;
   }
-
-  static void Initialize(v8::Handle<v8::Object> target);
 
   static void GetFD(v8::Local<v8::String>,
                     const v8::PropertyCallbackInfo<v8::Value>&);
@@ -146,7 +146,9 @@ class StreamWrap : public HandleWrap {
  protected:
   static size_t WriteBuffer(v8::Handle<v8::Value> val, uv_buf_t* buf);
 
-  StreamWrap(v8::Handle<v8::Object> object, uv_stream_t* stream);
+  StreamWrap(Environment* env,
+             v8::Local<v8::Object> object,
+             uv_stream_t* stream);
 
   ~StreamWrap() {
     if (callbacks_ != &default_callbacks_) {
@@ -161,14 +163,22 @@ class StreamWrap : public HandleWrap {
  private:
   // Callbacks for libuv
   static void AfterWrite(uv_write_t* req, int status);
-  static uv_buf_t OnAlloc(uv_handle_t* handle, size_t suggested_size);
+  static void OnAlloc(uv_handle_t* handle,
+                      size_t suggested_size,
+                      uv_buf_t* buf);
   static void AfterShutdown(uv_shutdown_t* req, int status);
 
-  static void OnRead(uv_stream_t* handle, ssize_t nread, uv_buf_t buf);
-  static void OnRead2(uv_pipe_t* handle, ssize_t nread, uv_buf_t buf,
-      uv_handle_type pending);
-  static void OnReadCommon(uv_stream_t* handle, ssize_t nread,
-      uv_buf_t buf, uv_handle_type pending);
+  static void OnRead(uv_stream_t* handle,
+                     ssize_t nread,
+                     const uv_buf_t* buf);
+  static void OnRead2(uv_pipe_t* handle,
+                      ssize_t nread,
+                      const uv_buf_t* buf,
+                      uv_handle_type pending);
+  static void OnReadCommon(uv_stream_t* handle,
+                           ssize_t nread,
+                           const uv_buf_t* buf,
+                           uv_handle_type pending);
 
   template <enum encoding encoding>
   static void WriteStringImpl(const v8::FunctionCallbackInfo<v8::Value>& args);

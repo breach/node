@@ -25,7 +25,10 @@
 #include "node_crypto_bio.h"
 #include "node_crypto_groups.h"
 #include "node_root_certs.h"
+#include "tls_wrap.h"  // TLSCallbacks
 
+#include "env.h"
+#include "env-inl.h"
 #include "string_bytes.h"
 #include "v8.h"
 
@@ -68,6 +71,8 @@ namespace node {
 namespace crypto {
 
 using v8::Array;
+using v8::Boolean;
+using v8::Context;
 using v8::Exception;
 using v8::False;
 using v8::FunctionCallbackInfo;
@@ -81,6 +86,7 @@ using v8::Object;
 using v8::Persistent;
 using v8::String;
 using v8::ThrowException;
+using v8::V8;
 using v8::Value;
 
 
@@ -92,26 +98,35 @@ struct ClearErrorOnReturn {
   ~ClearErrorOnReturn() { ERR_clear_error(); }
 };
 
-static Cached<String> subject_symbol;
-static Cached<String> subjectaltname_symbol;
-static Cached<String> modulus_symbol;
-static Cached<String> exponent_symbol;
-static Cached<String> issuer_symbol;
-static Cached<String> valid_from_symbol;
-static Cached<String> valid_to_symbol;
-static Cached<String> fingerprint_symbol;
-static Cached<String> name_symbol;
-static Cached<String> version_symbol;
-static Cached<String> ext_key_usage_symbol;
-static Cached<String> onhandshakestart_sym;
-static Cached<String> onhandshakedone_sym;
-static Cached<String> onclienthello_sym;
-static Cached<String> onnewsession_sym;
-static Cached<String> sessionid_sym;
-
-static Persistent<FunctionTemplate> secure_context_constructor;
-
 static uv_rwlock_t* locks;
+
+X509_STORE* root_cert_store;
+
+// Just to generate static methods
+template class SSLWrap<TLSCallbacks>;
+template void SSLWrap<TLSCallbacks>::AddMethods(Handle<FunctionTemplate> t);
+template SSL_SESSION* SSLWrap<TLSCallbacks>::GetSessionCallback(
+    SSL* s,
+    unsigned char* key,
+    int len,
+    int* copy);
+template int SSLWrap<TLSCallbacks>::NewSessionCallback(SSL* s,
+                                                       SSL_SESSION* sess);
+template void SSLWrap<TLSCallbacks>::OnClientHello(
+    void* arg,
+    const ClientHelloParser::ClientHello& hello);
+template int SSLWrap<TLSCallbacks>::AdvertiseNextProtoCallback(
+    SSL* s,
+    const unsigned char** data,
+    unsigned int* len,
+    void* arg);
+template int SSLWrap<TLSCallbacks>::SelectNextProtoCallback(
+    SSL* s,
+    unsigned char** out,
+    unsigned char* outlen,
+    const unsigned char* in,
+    unsigned int inlen,
+    void* arg);
 
 
 static void crypto_threadid_cb(CRYPTO_THREADID* tid) {
@@ -170,12 +185,8 @@ void ThrowCryptoTypeError(unsigned long err) {
 }
 
 
-void SecureContext::Initialize(Handle<Object> target) {
-  HandleScope scope(node_isolate);
-
+void SecureContext::Initialize(Environment* env, Handle<Object> target) {
   Local<FunctionTemplate> t = FunctionTemplate::New(SecureContext::New);
-  secure_context_constructor.Reset(node_isolate, t);
-
   t->InstanceTemplate()->SetInternalFieldCount(1);
   t->SetClassName(FIXED_ONE_BYTE_STRING(node_isolate, "SecureContext"));
 
@@ -198,12 +209,14 @@ void SecureContext::Initialize(Handle<Object> target) {
 
   target->Set(FIXED_ONE_BYTE_STRING(node_isolate, "SecureContext"),
               t->GetFunction());
+  env->set_secure_context_constructor_template(t);
 }
 
 
 void SecureContext::New(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
-  SecureContext* sc = new SecureContext();
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope handle_scope(args.GetIsolate());
+  SecureContext* sc = new SecureContext(env);
   sc->Wrap(args.This());
 }
 
@@ -278,67 +291,17 @@ void SecureContext::Init(const FunctionCallbackInfo<Value>& args) {
                                  SSL_SESS_CACHE_SERVER |
                                  SSL_SESS_CACHE_NO_INTERNAL |
                                  SSL_SESS_CACHE_NO_AUTO_CLEAR);
-  SSL_CTX_sess_set_get_cb(sc->ctx_, GetSessionCallback);
-  SSL_CTX_sess_set_new_cb(sc->ctx_, NewSessionCallback);
+  SSL_CTX_sess_set_get_cb(sc->ctx_, SSLWrap<Connection>::GetSessionCallback);
+  SSL_CTX_sess_set_new_cb(sc->ctx_, SSLWrap<Connection>::NewSessionCallback);
 
   sc->ca_store_ = NULL;
-}
-
-
-SSL_SESSION* SecureContext::GetSessionCallback(SSL* s,
-                                               unsigned char* key,
-                                               int len,
-                                               int* copy) {
-  HandleScope scope(node_isolate);
-
-  Connection* conn = static_cast<Connection*>(SSL_get_app_data(s));
-
-  *copy = 0;
-  SSL_SESSION* sess = conn->next_sess_;
-  conn->next_sess_ = NULL;
-
-  return sess;
-}
-
-
-int SecureContext::NewSessionCallback(SSL* s, SSL_SESSION* sess) {
-  HandleScope scope(node_isolate);
-
-  Connection* conn = static_cast<Connection*>(SSL_get_app_data(s));
-
-  // Check if session is small enough to be stored
-  int size = i2d_SSL_SESSION(sess, NULL);
-  if (size > kMaxSessionSize) return 0;
-
-  // Serialize session
-  char* serialized = new char[size];
-  unsigned char* pserialized = reinterpret_cast<unsigned char*>(serialized);
-  memset(serialized, 0, size);
-  i2d_SSL_SESSION(sess, &pserialized);
-
-  Handle<Value> argv[2] = {
-    Buffer::New(reinterpret_cast<char*>(sess->session_id),
-                sess->session_id_length),
-    Buffer::Use(serialized, size)
-  };
-
-  if (onnewsession_sym.IsEmpty()) {
-    onnewsession_sym = FIXED_ONE_BYTE_STRING(node_isolate, "onnewsession");
-  }
-
-  MakeCallback(conn->handle(node_isolate),
-               onnewsession_sym,
-               ARRAY_SIZE(argv),
-               argv);
-
-  return 0;
 }
 
 
 // Takes a string or buffer and loads it into a BIO.
 // Caller responsible for BIO_free_all-ing the returned object.
 static BIO* LoadBIO(Handle<Value> v) {
-  BIO *bio = BIO_new(NodeBIO::GetMethod());
+  BIO* bio = NodeBIO::New();
   if (!bio) return NULL;
 
   HandleScope scope(node_isolate);
@@ -581,7 +544,7 @@ void SecureContext::AddRootCerts(const FunctionCallbackInfo<Value>& args) {
     root_cert_store = X509_STORE_new();
 
     for (int i = 0; root_certs[i]; i++) {
-      BIO *bp = BIO_new(NodeBIO::GetMethod());
+      BIO* bp = NodeBIO::New();
 
       if (!BIO_write(bp, root_certs[i], strlen(root_certs[i]))) {
         BIO_free_all(bp);
@@ -767,12 +730,12 @@ void SecureContext::LoadPKCS12(const FunctionCallbackInfo<Value>& args) {
 
 void SecureContext::GetTicketKeys(const FunctionCallbackInfo<Value>& args) {
 #if !defined(OPENSSL_NO_TLSEXT) && defined(SSL_CTX_get_tlsext_ticket_keys)
-  HandleScope scope(node_isolate);
+  HandleScope handle_scope(args.GetIsolate());
 
   SecureContext* wrap;
   NODE_UNWRAP(args.This(), SecureContext, wrap);
 
-  Local<Object> buff = Buffer::New(48);
+  Local<Object> buff = Buffer::New(wrap->env(), 48);
   if (SSL_CTX_get_tlsext_ticket_keys(wrap->ctx_,
                                      Buffer::Data(buff),
                                      Buffer::Length(buff)) != 1) {
@@ -808,27 +771,605 @@ void SecureContext::SetTicketKeys(const FunctionCallbackInfo<Value>& args) {
 }
 
 
-void Connection::OnClientHello(void* arg,
-                               const ClientHelloParser::ClientHello& hello) {
+template <class Base>
+void SSLWrap<Base>::AddMethods(Handle<FunctionTemplate> t) {
   HandleScope scope(node_isolate);
-  Connection* conn = static_cast<Connection*>(arg);
 
-  if (onclienthello_sym.IsEmpty())
-    onclienthello_sym = FIXED_ONE_BYTE_STRING(node_isolate, "onclienthello");
-  if (sessionid_sym.IsEmpty())
-    sessionid_sym = FIXED_ONE_BYTE_STRING(node_isolate, "sessionId");
+  NODE_SET_PROTOTYPE_METHOD(t, "getPeerCertificate", GetPeerCertificate);
+  NODE_SET_PROTOTYPE_METHOD(t, "getSession", GetSession);
+  NODE_SET_PROTOTYPE_METHOD(t, "setSession", SetSession);
+  NODE_SET_PROTOTYPE_METHOD(t, "loadSession", LoadSession);
+  NODE_SET_PROTOTYPE_METHOD(t, "isSessionReused", IsSessionReused);
+  NODE_SET_PROTOTYPE_METHOD(t, "isInitFinished", IsInitFinished);
+  NODE_SET_PROTOTYPE_METHOD(t, "verifyError", VerifyError);
+  NODE_SET_PROTOTYPE_METHOD(t, "getCurrentCipher", GetCurrentCipher);
+  NODE_SET_PROTOTYPE_METHOD(t, "receivedShutdown", ReceivedShutdown);
+  NODE_SET_PROTOTYPE_METHOD(t, "endParser", EndParser);
+  NODE_SET_PROTOTYPE_METHOD(t, "renegotiate", Renegotiate);
 
-  Local<Object> obj = Object::New();
-  obj->Set(sessionid_sym,
-           Buffer::New(reinterpret_cast<const char*>(hello.session_id()),
-                       hello.session_size()));
+#ifdef OPENSSL_NPN_NEGOTIATED
+  NODE_SET_PROTOTYPE_METHOD(t, "getNegotiatedProtocol", GetNegotiatedProto);
+  NODE_SET_PROTOTYPE_METHOD(t, "setNPNProtocols", SetNPNProtocols);
+#endif  // OPENSSL_NPN_NEGOTIATED
+}
 
-  Handle<Value> argv[1] = { obj };
-  MakeCallback(conn->handle(node_isolate),
-               onclienthello_sym,
+
+template <class Base>
+SSL_SESSION* SSLWrap<Base>::GetSessionCallback(SSL* s,
+                                               unsigned char* key,
+                                               int len,
+                                               int* copy) {
+  HandleScope scope(node_isolate);
+
+  Base* w = static_cast<Base*>(SSL_get_app_data(s));
+
+  *copy = 0;
+  SSL_SESSION* sess = w->next_sess_;
+  w->next_sess_ = NULL;
+
+  return sess;
+}
+
+
+template <class Base>
+int SSLWrap<Base>::NewSessionCallback(SSL* s, SSL_SESSION* sess) {
+  HandleScope scope(node_isolate);
+
+  Base* w = static_cast<Base*>(SSL_get_app_data(s));
+  Environment* env = w->env();
+
+  if (!w->session_callbacks_)
+    return 0;
+
+  // Check if session is small enough to be stored
+  int size = i2d_SSL_SESSION(sess, NULL);
+  if (size > SecureContext::kMaxSessionSize)
+    return 0;
+
+  // Serialize session
+  Local<Object> buff = Buffer::New(env, size);
+  unsigned char* serialized = reinterpret_cast<unsigned char*>(
+      Buffer::Data(buff));
+  memset(serialized, 0, size);
+  i2d_SSL_SESSION(sess, &serialized);
+
+  Local<Object> session = Buffer::New(env,
+                                      reinterpret_cast<char*>(sess->session_id),
+                                      sess->session_id_length);
+  Local<Value> argv[] = { session, buff };
+  MakeCallback(env,
+               w->handle(node_isolate),
+               env->onnewsession_string(),
+               ARRAY_SIZE(argv),
+               argv);
+
+  return 0;
+}
+
+
+template <class Base>
+void SSLWrap<Base>::OnClientHello(void* arg,
+                                  const ClientHelloParser::ClientHello& hello) {
+  HandleScope scope(node_isolate);
+
+  Base* w = static_cast<Base*>(arg);
+  Environment* env = w->env();
+
+  Local<Object> hello_obj = Object::New();
+  Local<Object> buff = Buffer::New(
+      env,
+      reinterpret_cast<const char*>(hello.session_id()),
+      hello.session_size());
+  hello_obj->Set(env->session_id_string(), buff);
+  if (hello.servername() == NULL) {
+    hello_obj->Set(env->servername_string(), String::Empty(node_isolate));
+  } else {
+    Local<String> servername = OneByteString(node_isolate,
+                                             hello.servername(),
+                                             hello.servername_size());
+    hello_obj->Set(env->servername_string(), servername);
+  }
+  hello_obj->Set(env->tls_ticket_string(), Boolean::New(hello.has_ticket()));
+
+  Local<Value> argv[] = { hello_obj };
+  MakeCallback(env,
+               w->handle(node_isolate),
+               env->onclienthello_string(),
                ARRAY_SIZE(argv),
                argv);
 }
+
+
+// TODO(indutny): Split it into multiple smaller functions
+template <class Base>
+void SSLWrap<Base>::GetPeerCertificate(
+    const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(node_isolate);
+
+  Base* w = NULL;
+  NODE_UNWRAP(args.This(), Base, w);
+  Environment* env = w->env();
+
+  Local<Object> info = Object::New();
+  X509* peer_cert = SSL_get_peer_certificate(w->ssl_);
+  if (peer_cert != NULL) {
+    BIO* bio = BIO_new(BIO_s_mem());
+    BUF_MEM* mem;
+    if (X509_NAME_print_ex(bio,
+                           X509_get_subject_name(peer_cert),
+                           0,
+                           X509_NAME_FLAGS) > 0) {
+      BIO_get_mem_ptr(bio, &mem);
+      info->Set(env->subject_string(),
+                OneByteString(node_isolate, mem->data, mem->length));
+    }
+    (void) BIO_reset(bio);
+
+    X509_NAME* issuer_name = X509_get_issuer_name(peer_cert);
+    if (X509_NAME_print_ex(bio, issuer_name, 0, X509_NAME_FLAGS) > 0) {
+      BIO_get_mem_ptr(bio, &mem);
+      info->Set(env->issuer_string(),
+                OneByteString(node_isolate, mem->data, mem->length));
+    }
+    (void) BIO_reset(bio);
+
+    int index = X509_get_ext_by_NID(peer_cert, NID_subject_alt_name, -1);
+    if (index >= 0) {
+      X509_EXTENSION* ext;
+      int rv;
+
+      ext = X509_get_ext(peer_cert, index);
+      assert(ext != NULL);
+
+      rv = X509V3_EXT_print(bio, ext, 0, 0);
+      assert(rv == 1);
+
+      BIO_get_mem_ptr(bio, &mem);
+      info->Set(env->subjectaltname_string(),
+                OneByteString(node_isolate, mem->data, mem->length));
+
+      (void) BIO_reset(bio);
+    }
+
+    EVP_PKEY* pkey = X509_get_pubkey(peer_cert);
+    RSA* rsa = NULL;
+    if (pkey != NULL)
+      rsa = EVP_PKEY_get1_RSA(pkey);
+
+    if (rsa != NULL) {
+        BN_print(bio, rsa->n);
+        BIO_get_mem_ptr(bio, &mem);
+        info->Set(env->modulus_string(),
+                  OneByteString(node_isolate, mem->data, mem->length));
+        (void) BIO_reset(bio);
+
+        BN_print(bio, rsa->e);
+        BIO_get_mem_ptr(bio, &mem);
+        info->Set(env->exponent_string(),
+                  OneByteString(node_isolate, mem->data, mem->length));
+        (void) BIO_reset(bio);
+    }
+
+    if (pkey != NULL) {
+      EVP_PKEY_free(pkey);
+      pkey = NULL;
+    }
+    if (rsa != NULL) {
+      RSA_free(rsa);
+      rsa = NULL;
+    }
+
+    ASN1_TIME_print(bio, X509_get_notBefore(peer_cert));
+    BIO_get_mem_ptr(bio, &mem);
+    info->Set(env->valid_from_string(),
+              OneByteString(node_isolate, mem->data, mem->length));
+    (void) BIO_reset(bio);
+
+    ASN1_TIME_print(bio, X509_get_notAfter(peer_cert));
+    BIO_get_mem_ptr(bio, &mem);
+    info->Set(env->valid_to_string(),
+              OneByteString(node_isolate, mem->data, mem->length));
+    BIO_free_all(bio);
+
+    unsigned int md_size, i;
+    unsigned char md[EVP_MAX_MD_SIZE];
+    if (X509_digest(peer_cert, EVP_sha1(), md, &md_size)) {
+      const char hex[] = "0123456789ABCDEF";
+      char fingerprint[EVP_MAX_MD_SIZE * 3];
+
+      // TODO(indutny): Unify it with buffer's code
+      for (i = 0; i < md_size; i++) {
+        fingerprint[3*i] = hex[(md[i] & 0xf0) >> 4];
+        fingerprint[(3*i)+1] = hex[(md[i] & 0x0f)];
+        fingerprint[(3*i)+2] = ':';
+      }
+
+      if (md_size > 0) {
+        fingerprint[(3*(md_size-1))+2] = '\0';
+      } else {
+        fingerprint[0] = '\0';
+      }
+
+      info->Set(env->fingerprint_string(),
+                OneByteString(node_isolate, fingerprint));
+    }
+
+    STACK_OF(ASN1_OBJECT)* eku = static_cast<STACK_OF(ASN1_OBJECT)*>(
+        X509_get_ext_d2i(peer_cert, NID_ext_key_usage, NULL, NULL));
+    if (eku != NULL) {
+      Local<Array> ext_key_usage = Array::New();
+      char buf[256];
+
+      int j = 0;
+      for (int i = 0; i < sk_ASN1_OBJECT_num(eku); i++) {
+        if (OBJ_obj2txt(buf, sizeof(buf), sk_ASN1_OBJECT_value(eku, i), 1) >= 0)
+          ext_key_usage->Set(j++, OneByteString(node_isolate, buf));
+      }
+
+      sk_ASN1_OBJECT_pop_free(eku, ASN1_OBJECT_free);
+      info->Set(env->ext_key_usage_string(), ext_key_usage);
+    }
+
+    X509_free(peer_cert);
+  }
+
+  args.GetReturnValue().Set(info);
+}
+
+
+template <class Base>
+void SSLWrap<Base>::GetSession(const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(node_isolate);
+
+  Base* w = NULL;
+  NODE_UNWRAP(args.This(), Base, w);
+
+  SSL_SESSION* sess = SSL_get_session(w->ssl_);
+  if (sess == NULL)
+    return;
+
+  int slen = i2d_SSL_SESSION(sess, NULL);
+  assert(slen > 0);
+
+  unsigned char* sbuf = new unsigned char[slen];
+  unsigned char* p = sbuf;
+  i2d_SSL_SESSION(sess, &p);
+  args.GetReturnValue().Set(Encode(sbuf, slen, BINARY));
+  delete[] sbuf;
+}
+
+
+template <class Base>
+void SSLWrap<Base>::SetSession(const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(node_isolate);
+
+  Base* w = NULL;
+  NODE_UNWRAP(args.This(), Base, w);
+
+  if (args.Length() < 1 ||
+      (!args[0]->IsString() && !Buffer::HasInstance(args[0]))) {
+    return ThrowTypeError("Bad argument");
+  }
+
+  ASSERT_IS_BUFFER(args[0]);
+  ssize_t slen = Buffer::Length(args[0]);
+
+  if (slen < 0)
+    return ThrowTypeError("Bad argument");
+
+  char* sbuf = new char[slen];
+
+  ssize_t wlen = DecodeWrite(sbuf, slen, args[0], BINARY);
+  assert(wlen == slen);
+
+  const unsigned char* p = reinterpret_cast<const unsigned char*>(sbuf);
+  SSL_SESSION* sess = d2i_SSL_SESSION(NULL, &p, wlen);
+
+  delete[] sbuf;
+
+  if (sess == NULL)
+    return;
+
+  int r = SSL_set_session(w->ssl_, sess);
+  SSL_SESSION_free(sess);
+
+  if (!r)
+    return ThrowError("SSL_set_session error");
+}
+
+
+template <class Base>
+void SSLWrap<Base>::LoadSession(const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(node_isolate);
+
+  Base* w = NULL;
+  NODE_UNWRAP(args.This(), Base, w);
+  Environment* env = w->env();
+
+  if (args.Length() >= 1 && Buffer::HasInstance(args[0])) {
+    ssize_t slen = Buffer::Length(args[0]);
+    char* sbuf = Buffer::Data(args[0]);
+
+    const unsigned char* p = reinterpret_cast<unsigned char*>(sbuf);
+    SSL_SESSION* sess = d2i_SSL_SESSION(NULL, &p, slen);
+
+    // Setup next session and move hello to the BIO buffer
+    if (w->next_sess_ != NULL)
+      SSL_SESSION_free(w->next_sess_);
+    w->next_sess_ = sess;
+
+    Local<Object> info = Object::New();
+#ifndef OPENSSL_NO_TLSEXT
+    if (sess->tlsext_hostname == NULL) {
+      info->Set(env->servername_string(), False(node_isolate));
+    } else {
+      info->Set(env->servername_string(),
+                OneByteString(node_isolate, sess->tlsext_hostname));
+    }
+#endif
+    args.GetReturnValue().Set(info);
+  }
+}
+
+
+template <class Base>
+void SSLWrap<Base>::IsSessionReused(const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(node_isolate);
+  Base* w = NULL;
+  NODE_UNWRAP(args.This(), Base, w);
+  bool yes = SSL_session_reused(w->ssl_);
+  args.GetReturnValue().Set(yes);
+}
+
+
+template <class Base>
+void SSLWrap<Base>::ReceivedShutdown(const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(node_isolate);
+  Base* w = NULL;
+  NODE_UNWRAP(args.This(), Base, w);
+  bool yes = SSL_get_shutdown(w->ssl_) == SSL_RECEIVED_SHUTDOWN;
+  args.GetReturnValue().Set(yes);
+}
+
+
+template <class Base>
+void SSLWrap<Base>::EndParser(const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(node_isolate);
+  Base* w = NULL;
+  NODE_UNWRAP(args.This(), Base, w);
+  w->hello_parser_.End();
+}
+
+
+template <class Base>
+void SSLWrap<Base>::Renegotiate(const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(node_isolate);
+
+  Base* w = NULL;
+  NODE_UNWRAP(args.This(), Base, w);
+
+  ClearErrorOnReturn clear_error_on_return;
+  (void) &clear_error_on_return;  // Silence unused variable warning.
+
+  bool yes = SSL_renegotiate(w->ssl_) == 1;
+  args.GetReturnValue().Set(yes);
+}
+
+
+template <class Base>
+void SSLWrap<Base>::IsInitFinished(const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(node_isolate);
+  Base* w = NULL;
+  NODE_UNWRAP(args.This(), Base, w);
+  bool yes = SSL_is_init_finished(w->ssl_);
+  args.GetReturnValue().Set(yes);
+}
+
+
+#define CASE_X509_ERR(CODE) case X509_V_ERR_##CODE: reason = #CODE; break;
+template <class Base>
+void SSLWrap<Base>::VerifyError(const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(node_isolate);
+
+  Base* w = NULL;
+  NODE_UNWRAP(args.This(), Base, w);
+
+  // XXX(indutny) Do this check in JS land?
+  X509* peer_cert = SSL_get_peer_certificate(w->ssl_);
+  if (peer_cert == NULL) {
+    // We requested a certificate and they did not send us one.
+    // Definitely an error.
+    // XXX(indutny) is this the right error message?
+    Local<String> s =
+        FIXED_ONE_BYTE_STRING(node_isolate, "UNABLE_TO_GET_ISSUER_CERT");
+    return args.GetReturnValue().Set(Exception::Error(s));
+  }
+  X509_free(peer_cert);
+
+  long x509_verify_error = SSL_get_verify_result(w->ssl_);
+
+  const char* reason = NULL;
+  Local<String> s;
+  switch (x509_verify_error) {
+    case X509_V_OK:
+      return args.GetReturnValue().SetNull();
+    CASE_X509_ERR(UNABLE_TO_GET_ISSUER_CERT)
+    CASE_X509_ERR(UNABLE_TO_GET_CRL)
+    CASE_X509_ERR(UNABLE_TO_DECRYPT_CERT_SIGNATURE)
+    CASE_X509_ERR(UNABLE_TO_DECRYPT_CRL_SIGNATURE)
+    CASE_X509_ERR(UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY)
+    CASE_X509_ERR(CERT_SIGNATURE_FAILURE)
+    CASE_X509_ERR(CRL_SIGNATURE_FAILURE)
+    CASE_X509_ERR(CERT_NOT_YET_VALID)
+    CASE_X509_ERR(CERT_HAS_EXPIRED)
+    CASE_X509_ERR(CRL_NOT_YET_VALID)
+    CASE_X509_ERR(CRL_HAS_EXPIRED)
+    CASE_X509_ERR(ERROR_IN_CERT_NOT_BEFORE_FIELD)
+    CASE_X509_ERR(ERROR_IN_CERT_NOT_AFTER_FIELD)
+    CASE_X509_ERR(ERROR_IN_CRL_LAST_UPDATE_FIELD)
+    CASE_X509_ERR(ERROR_IN_CRL_NEXT_UPDATE_FIELD)
+    CASE_X509_ERR(OUT_OF_MEM)
+    CASE_X509_ERR(DEPTH_ZERO_SELF_SIGNED_CERT)
+    CASE_X509_ERR(SELF_SIGNED_CERT_IN_CHAIN)
+    CASE_X509_ERR(UNABLE_TO_GET_ISSUER_CERT_LOCALLY)
+    CASE_X509_ERR(UNABLE_TO_VERIFY_LEAF_SIGNATURE)
+    CASE_X509_ERR(CERT_CHAIN_TOO_LONG)
+    CASE_X509_ERR(CERT_REVOKED)
+    CASE_X509_ERR(INVALID_CA)
+    CASE_X509_ERR(PATH_LENGTH_EXCEEDED)
+    CASE_X509_ERR(INVALID_PURPOSE)
+    CASE_X509_ERR(CERT_UNTRUSTED)
+    CASE_X509_ERR(CERT_REJECTED)
+    default:
+      s = OneByteString(node_isolate,
+                        X509_verify_cert_error_string(x509_verify_error));
+      break;
+  }
+
+  if (s.IsEmpty())
+    s = OneByteString(node_isolate, reason);
+
+  args.GetReturnValue().Set(Exception::Error(s));
+}
+#undef CASE_X509_ERR
+
+
+template <class Base>
+void SSLWrap<Base>::GetCurrentCipher(const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(node_isolate);
+
+  Base* w = NULL;
+  NODE_UNWRAP(args.This(), Base, w);
+  Environment* env = w->env();
+
+  OPENSSL_CONST SSL_CIPHER* c = SSL_get_current_cipher(w->ssl_);
+  if (c == NULL)
+    return;
+
+  Local<Object> info = Object::New();
+  const char* cipher_name = SSL_CIPHER_get_name(c);
+  info->Set(env->name_string(), OneByteString(node_isolate, cipher_name));
+  const char* cipher_version = SSL_CIPHER_get_version(c);
+  info->Set(env->version_string(), OneByteString(node_isolate, cipher_version));
+  args.GetReturnValue().Set(info);
+}
+
+
+#ifdef OPENSSL_NPN_NEGOTIATED
+template <class Base>
+int SSLWrap<Base>::AdvertiseNextProtoCallback(SSL* s,
+                                              const unsigned char** data,
+                                              unsigned int* len,
+                                              void* arg) {
+  Base* w = static_cast<Base*>(arg);
+
+  if (w->npn_protos_.IsEmpty()) {
+    // No initialization - no NPN protocols
+    *data = reinterpret_cast<const unsigned char*>("");
+    *len = 0;
+  } else {
+    Local<Object> obj = PersistentToLocal(node_isolate, w->npn_protos_);
+    *data = reinterpret_cast<const unsigned char*>(Buffer::Data(obj));
+    *len = Buffer::Length(obj);
+  }
+
+  return SSL_TLSEXT_ERR_OK;
+}
+
+
+template <class Base>
+int SSLWrap<Base>::SelectNextProtoCallback(SSL* s,
+                                           unsigned char** out,
+                                           unsigned char* outlen,
+                                           const unsigned char* in,
+                                           unsigned int inlen,
+                                           void* arg) {
+  Base* w = static_cast<Base*>(arg);
+
+  // Release old protocol handler if present
+  w->selected_npn_proto_.Dispose();
+
+  if (w->npn_protos_.IsEmpty()) {
+    // We should at least select one protocol
+    // If server is using NPN
+    *out = reinterpret_cast<unsigned char*>(const_cast<char*>("http/1.1"));
+    *outlen = 8;
+
+    // set status: unsupported
+    w->selected_npn_proto_.Reset(node_isolate, False(node_isolate));
+
+    return SSL_TLSEXT_ERR_OK;
+  }
+
+  Local<Object> obj = PersistentToLocal(node_isolate, w->npn_protos_);
+  const unsigned char* npn_protos =
+      reinterpret_cast<const unsigned char*>(Buffer::Data(obj));
+  size_t len = Buffer::Length(obj);
+
+  int status = SSL_select_next_proto(out, outlen, in, inlen, npn_protos, len);
+  Handle<Value> result;
+  switch (status) {
+    case OPENSSL_NPN_UNSUPPORTED:
+      result = Null(node_isolate);
+      break;
+    case OPENSSL_NPN_NEGOTIATED:
+      result = OneByteString(node_isolate, *out, *outlen);
+      break;
+    case OPENSSL_NPN_NO_OVERLAP:
+      result = False(node_isolate);
+      break;
+    default:
+      break;
+  }
+
+  if (!result.IsEmpty())
+    w->selected_npn_proto_.Reset(node_isolate, result);
+
+  return SSL_TLSEXT_ERR_OK;
+}
+
+
+template <class Base>
+void SSLWrap<Base>::GetNegotiatedProto(
+    const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(node_isolate);
+
+  Base* w = NULL;
+  NODE_UNWRAP(args.This(), Base, w);
+
+  if (w->is_client()) {
+    if (w->selected_npn_proto_.IsEmpty() == false) {
+      args.GetReturnValue().Set(w->selected_npn_proto_);
+    }
+    return;
+  }
+
+  const unsigned char* npn_proto;
+  unsigned int npn_proto_len;
+
+  SSL_get0_next_proto_negotiated(w->ssl_, &npn_proto, &npn_proto_len);
+
+  if (!npn_proto)
+    return args.GetReturnValue().Set(false);
+
+  args.GetReturnValue().Set(
+      OneByteString(node_isolate, npn_proto, npn_proto_len));
+}
+
+
+template <class Base>
+void SSLWrap<Base>::SetNPNProtocols(const FunctionCallbackInfo<Value>& args) {
+  HandleScope scope(node_isolate);
+
+  Base* w = NULL;
+  NODE_UNWRAP(args.This(), Base, w);
+
+  if (args.Length() < 1 || !Buffer::HasInstance(args[0]))
+    return ThrowTypeError("Must give a Buffer as first argument");
+
+  w->npn_protos_.Reset(node_isolate, args[0].As<Object>());
+}
+#endif  // OPENSSL_NPN_NEGOTIATED
 
 
 void Connection::OnClientHelloParseEnd(void* arg) {
@@ -868,7 +1409,7 @@ int Connection::HandleBIOError(BIO *bio, const char* func, int rv) {
     return 0;
 
   } else {
-    static char ssl_error_buf[512];
+    char ssl_error_buf[512];
     ERR_error_string_n(rv, ssl_error_buf, sizeof(ssl_error_buf));
 
     HandleScope scope(node_isolate);
@@ -897,8 +1438,10 @@ int Connection::HandleSSLError(const char* func,
   ClearErrorOnReturn clear_error_on_return;
   (void) &clear_error_on_return;  // Silence unused variable warning.
 
-  if (rv > 0) return rv;
-  if ((rv == 0) && (zs == kZeroIsNotAnError)) return rv;
+  if (rv > 0)
+    return rv;
+  if (rv == 0 && zs == kZeroIsNotAnError)
+    return rv;
 
   int err = SSL_get_error(ssl_, rv);
 
@@ -920,7 +1463,7 @@ int Connection::HandleSSLError(const char* func,
         FIXED_ONE_BYTE_STRING(node_isolate, "error"), exception);
     return rv;
 
-  } else if ((err == SSL_ERROR_SYSCALL) && (ss == kIgnoreSyscall)) {
+  } else if (err == SSL_ERROR_SYSCALL && ss == kIgnoreSyscall) {
     return 0;
 
   } else {
@@ -935,7 +1478,8 @@ int Connection::HandleSSLError(const char* func,
     // understood. And we should be somehow propagating these errors up
     // into JavaScript. There is no test which demonstrates this problem.
     // https://github.com/joyent/node/issues/1719
-    if ((bio = BIO_new(BIO_s_mem()))) {
+    bio = BIO_new(BIO_s_mem());
+    if (bio != NULL) {
       ERR_print_errors(bio);
       BIO_get_mem_ptr(bio, &mem);
       Local<Value> exception =
@@ -983,9 +1527,7 @@ void Connection::SetShutdownFlags() {
 }
 
 
-void Connection::Initialize(Handle<Object> target) {
-  HandleScope scope(node_isolate);
-
+void Connection::Initialize(Environment* env, Handle<Object> target) {
   Local<FunctionTemplate> t = FunctionTemplate::New(Connection::New);
   t->InstanceTemplate()->SetInternalFieldCount(1);
   t->SetClassName(FIXED_ONE_BYTE_STRING(node_isolate, "Connection"));
@@ -996,24 +1538,11 @@ void Connection::Initialize(Handle<Object> target) {
   NODE_SET_PROTOTYPE_METHOD(t, "encOut", Connection::EncOut);
   NODE_SET_PROTOTYPE_METHOD(t, "clearPending", Connection::ClearPending);
   NODE_SET_PROTOTYPE_METHOD(t, "encPending", Connection::EncPending);
-  NODE_SET_PROTOTYPE_METHOD(t,
-                            "getPeerCertificate",
-                            Connection::GetPeerCertificate);
-  NODE_SET_PROTOTYPE_METHOD(t, "getSession", Connection::GetSession);
-  NODE_SET_PROTOTYPE_METHOD(t, "setSession", Connection::SetSession);
-  NODE_SET_PROTOTYPE_METHOD(t, "loadSession", Connection::LoadSession);
-  NODE_SET_PROTOTYPE_METHOD(t, "isSessionReused", Connection::IsSessionReused);
-  NODE_SET_PROTOTYPE_METHOD(t, "isInitFinished", Connection::IsInitFinished);
-  NODE_SET_PROTOTYPE_METHOD(t, "verifyError", Connection::VerifyError);
-  NODE_SET_PROTOTYPE_METHOD(t,
-                            "getCurrentCipher",
-                            Connection::GetCurrentCipher);
   NODE_SET_PROTOTYPE_METHOD(t, "start", Connection::Start);
   NODE_SET_PROTOTYPE_METHOD(t, "shutdown", Connection::Shutdown);
-  NODE_SET_PROTOTYPE_METHOD(t,
-                            "receivedShutdown",
-                            Connection::ReceivedShutdown);
   NODE_SET_PROTOTYPE_METHOD(t, "close", Connection::Close);
+
+  SSLWrap<Connection>::AddMethods(t);
 
 #ifdef OPENSSL_NPN_NEGOTIATED
   NODE_SET_PROTOTYPE_METHOD(t,
@@ -1035,7 +1564,7 @@ void Connection::Initialize(Handle<Object> target) {
 }
 
 
-static int VerifyCallback(int preverify_ok, X509_STORE_CTX *ctx) {
+int VerifyCallback(int preverify_ok, X509_STORE_CTX* ctx) {
   // Quoting SSL_set_verify(3ssl):
   //
   //   The VerifyCallback function is used to control the behaviour when
@@ -1080,97 +1609,33 @@ static int VerifyCallback(int preverify_ok, X509_STORE_CTX *ctx) {
   return 1;
 }
 
-#ifdef OPENSSL_NPN_NEGOTIATED
-
-int Connection::AdvertiseNextProtoCallback_(SSL *s,
-                                            const unsigned char** data,
-                                            unsigned int *len,
-                                            void *arg) {
-  Connection* conn = static_cast<Connection*>(SSL_get_app_data(s));
-
-  if (conn->npnProtos_.IsEmpty()) {
-    // No initialization - no NPN protocols
-    *data = reinterpret_cast<const unsigned char*>("");
-    *len = 0;
-  } else {
-    Local<Object> obj = PersistentToLocal(node_isolate, conn->npnProtos_);
-    *data = reinterpret_cast<const unsigned char*>(Buffer::Data(obj));
-    *len = Buffer::Length(obj);
-  }
-
-  return SSL_TLSEXT_ERR_OK;
-}
-
-int Connection::SelectNextProtoCallback_(SSL *s,
-                             unsigned char** out, unsigned char* outlen,
-                             const unsigned char* in,
-                             unsigned int inlen, void *arg) {
-  Connection* conn = static_cast<Connection*>(SSL_get_app_data(s));
-
-  // Release old protocol handler if present
-  conn->selectedNPNProto_.Dispose();
-
-  if (conn->npnProtos_.IsEmpty()) {
-    // We should at least select one protocol
-    // If server is using NPN
-    *out = reinterpret_cast<unsigned char*>(const_cast<char*>("http/1.1"));
-    *outlen = 8;
-
-    // set status unsupported
-    conn->selectedNPNProto_.Reset(node_isolate, False(node_isolate));
-
-    return SSL_TLSEXT_ERR_OK;
-  }
-
-  Local<Object> obj = PersistentToLocal(node_isolate, conn->npnProtos_);
-  const unsigned char* npnProtos =
-      reinterpret_cast<const unsigned char*>(Buffer::Data(obj));
-
-  int status = SSL_select_next_proto(out, outlen, in, inlen, npnProtos,
-                                     Buffer::Length(obj));
-
-  switch (status) {
-    case OPENSSL_NPN_UNSUPPORTED:
-      conn->selectedNPNProto_.Reset(node_isolate, Null(node_isolate));
-      break;
-    case OPENSSL_NPN_NEGOTIATED:
-      {
-        Local<String> string = OneByteString(node_isolate, *out, *outlen);
-        conn->selectedNPNProto_.Reset(node_isolate, string);
-        break;
-      }
-    case OPENSSL_NPN_NO_OVERLAP:
-      conn->selectedNPNProto_.Reset(node_isolate, False(node_isolate));
-      break;
-    default:
-      break;
-  }
-
-  return SSL_TLSEXT_ERR_OK;
-}
-#endif
 
 #ifdef SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
 int Connection::SelectSNIContextCallback_(SSL *s, int *ad, void* arg) {
   HandleScope scope(node_isolate);
 
   Connection* conn = static_cast<Connection*>(SSL_get_app_data(s));
+  Environment* env = conn->env();
 
   const char* servername = SSL_get_servername(s, TLSEXT_NAMETYPE_host_name);
 
   if (servername) {
     conn->servername_.Reset(node_isolate,
-                         OneByteString(node_isolate, servername));
+                            OneByteString(node_isolate, servername));
 
     // Call the SNI callback and use its return value as context
     if (!conn->sniObject_.IsEmpty()) {
       conn->sniContext_.Dispose();
 
+      Local<Object> sni_object =
+          PersistentToLocal(node_isolate, conn->sniObject_);
       Local<Value> arg = PersistentToLocal(node_isolate, conn->servername_);
-      Local<Value> ret = MakeCallback(conn->sniObject_, "onselect", 1, &arg);
+      Local<Value> ret = MakeCallback(env, sni_object, "onselect", 1, &arg);
 
       // If ret is SecureContext
-      if (HasInstance(secure_context_constructor, ret)) {
+      Local<FunctionTemplate> secure_context_constructor_template =
+          env->secure_context_constructor_template();
+      if (secure_context_constructor_template->HasInstance(ret)) {
         conn->sniContext_.Reset(node_isolate, ret);
         SecureContext* sc = ObjectWrap::Unwrap<SecureContext>(ret.As<Object>());
         SSL_set_SSL_CTX(s, sc->ctx_);
@@ -1187,37 +1652,43 @@ int Connection::SelectSNIContextCallback_(SSL *s, int *ad, void* arg) {
 void Connection::New(const FunctionCallbackInfo<Value>& args) {
   HandleScope scope(node_isolate);
 
-  Connection* conn = new Connection;
-  conn->Wrap(args.This());
-
   if (args.Length() < 1 || !args[0]->IsObject()) {
     return ThrowError("First argument must be a crypto module Credentials");
   }
 
-  SecureContext *sc = ObjectWrap::Unwrap<SecureContext>(args[0]->ToObject());
+  SecureContext* sc = ObjectWrap::Unwrap<SecureContext>(args[0]->ToObject());
+  Environment* env = sc->env();
 
   bool is_server = args[1]->BooleanValue();
 
+  SSLWrap<Connection>::Kind kind =
+      is_server ? SSLWrap<Connection>::kServer : SSLWrap<Connection>::kClient;
+  Connection* conn = new Connection(env, sc, kind);
+  conn->Wrap(args.This());
+
   conn->ssl_ = SSL_new(sc->ctx_);
-  conn->bio_read_ = BIO_new(NodeBIO::GetMethod());
-  conn->bio_write_ = BIO_new(NodeBIO::GetMethod());
+  conn->bio_read_ = NodeBIO::New();
+  conn->bio_write_ = NodeBIO::New();
 
   SSL_set_app_data(conn->ssl_, conn);
 
-  if (is_server) SSL_set_info_callback(conn->ssl_, SSLInfoCallback);
+  if (is_server)
+    SSL_set_info_callback(conn->ssl_, SSLInfoCallback);
 
 #ifdef OPENSSL_NPN_NEGOTIATED
   if (is_server) {
     // Server should advertise NPN protocols
-    SSL_CTX_set_next_protos_advertised_cb(sc->ctx_,
-                                          AdvertiseNextProtoCallback_,
-                                          NULL);
+    SSL_CTX_set_next_protos_advertised_cb(
+        sc->ctx_,
+        SSLWrap<Connection>::AdvertiseNextProtoCallback,
+        NULL);
   } else {
     // Client should select protocol from advertised
     // If server supports NPN
-    SSL_CTX_set_next_proto_select_cb(sc->ctx_,
-                                     SelectNextProtoCallback_,
-                                     NULL);
+    SSL_CTX_set_next_proto_select_cb(
+        sc->ctx_,
+        SSLWrap<Connection>::SelectNextProtoCallback,
+        NULL);
   }
 #endif
 
@@ -1258,7 +1729,7 @@ void Connection::New(const FunctionCallbackInfo<Value>& args) {
   // Always allow a connection. We'll reject in javascript.
   SSL_set_verify(conn->ssl_, verify_mode, VerifyCallback);
 
-  if ((conn->is_server_ = is_server)) {
+  if (is_server) {
     SSL_set_accept_state(conn->ssl_);
   } else {
     SSL_set_connect_state(conn->ssl_);
@@ -1267,26 +1738,27 @@ void Connection::New(const FunctionCallbackInfo<Value>& args) {
 
 
 void Connection::SSLInfoCallback(const SSL *ssl_, int where, int ret) {
+  if (!(where & (SSL_CB_HANDSHAKE_START | SSL_CB_HANDSHAKE_DONE)))
+    return;
+
   // Be compatible with older versions of OpenSSL. SSL_get_app_data() wants
   // a non-const SSL* in OpenSSL <= 0.9.7e.
   SSL* ssl = const_cast<SSL*>(ssl_);
+  Connection* conn = static_cast<Connection*>(SSL_get_app_data(ssl));
+  Environment* env = conn->env();
+  Context::Scope context_scope(env->context());
+  HandleScope handle_scope(env->isolate());
+
   if (where & SSL_CB_HANDSHAKE_START) {
-    HandleScope scope(node_isolate);
-    Connection* conn = static_cast<Connection*>(SSL_get_app_data(ssl));
-    if (onhandshakestart_sym.IsEmpty()) {
-      onhandshakestart_sym =
-          FIXED_ONE_BYTE_STRING(node_isolate, "onhandshakestart");
-    }
-    MakeCallback(conn->handle(node_isolate), onhandshakestart_sym, 0, NULL);
+    MakeCallback(env,
+                 conn->handle(node_isolate),
+                 env->onhandshakestart_string());
   }
+
   if (where & SSL_CB_HANDSHAKE_DONE) {
-    HandleScope scope(node_isolate);
-    Connection* conn = static_cast<Connection*>(SSL_get_app_data(ssl));
-    if (onhandshakedone_sym.IsEmpty()) {
-      onhandshakedone_sym =
-          FIXED_ONE_BYTE_STRING(node_isolate, "onhandshakedone");
-    }
-    MakeCallback(conn->handle(node_isolate), onhandshakedone_sym, 0, NULL);
+    MakeCallback(env,
+                 conn->handle(node_isolate),
+                 env->onhandshakedone_string());
   }
 }
 
@@ -1316,7 +1788,7 @@ void Connection::EncIn(const FunctionCallbackInfo<Value>& args) {
   int bytes_written;
   char* data = buffer_data + off;
 
-  if (conn->is_server_ && !conn->hello_parser_.IsEnded()) {
+  if (conn->is_server() && !conn->hello_parser_.IsEnded()) {
     // Just accumulate data, everything will be pushed to BIO later
     if (conn->hello_parser_.IsPaused()) {
       bytes_written = 0;
@@ -1366,7 +1838,7 @@ void Connection::ClearOut(const FunctionCallbackInfo<Value>& args) {
   if (!SSL_is_init_finished(conn->ssl_)) {
     int rv;
 
-    if (conn->is_server_) {
+    if (conn->is_server()) {
       rv = SSL_accept(conn->ssl_);
       conn->HandleSSLError("SSL_accept:ClearOut",
                            rv,
@@ -1467,7 +1939,7 @@ void Connection::ClearIn(const FunctionCallbackInfo<Value>& args) {
 
   if (!SSL_is_init_finished(conn->ssl_)) {
     int rv;
-    if (conn->is_server_) {
+    if (conn->is_server()) {
       rv = SSL_accept(conn->ssl_);
       conn->HandleSSLError("SSL_accept:ClearIn",
                            rv,
@@ -1498,223 +1970,6 @@ void Connection::ClearIn(const FunctionCallbackInfo<Value>& args) {
 }
 
 
-void Connection::GetPeerCertificate(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
-
-  Connection* conn = Connection::Unwrap(args.This());
-
-  if (conn->ssl_ == NULL) return;
-  Local<Object> info = Object::New();
-  X509* peer_cert = SSL_get_peer_certificate(conn->ssl_);
-  if (peer_cert != NULL) {
-    BIO* bio = BIO_new(BIO_s_mem());
-    BUF_MEM* mem;
-    if (X509_NAME_print_ex(bio, X509_get_subject_name(peer_cert), 0,
-                           X509_NAME_FLAGS) > 0) {
-      BIO_get_mem_ptr(bio, &mem);
-      info->Set(subject_symbol,
-                OneByteString(node_isolate, mem->data, mem->length));
-    }
-    (void) BIO_reset(bio);
-
-    X509_NAME* issuer_name = X509_get_issuer_name(peer_cert);
-    if (X509_NAME_print_ex(bio, issuer_name, 0, X509_NAME_FLAGS) > 0) {
-      BIO_get_mem_ptr(bio, &mem);
-      info->Set(issuer_symbol,
-                OneByteString(node_isolate, mem->data, mem->length));
-    }
-    (void) BIO_reset(bio);
-
-    int index = X509_get_ext_by_NID(peer_cert, NID_subject_alt_name, -1);
-    if (index >= 0) {
-      X509_EXTENSION* ext;
-      int rv;
-
-      ext = X509_get_ext(peer_cert, index);
-      assert(ext != NULL);
-
-      rv = X509V3_EXT_print(bio, ext, 0, 0);
-      assert(rv == 1);
-
-      BIO_get_mem_ptr(bio, &mem);
-      info->Set(subjectaltname_symbol,
-                OneByteString(node_isolate, mem->data, mem->length));
-
-      (void) BIO_reset(bio);
-    }
-
-    EVP_PKEY *pkey = NULL;
-    RSA *rsa = NULL;
-    if (NULL != (pkey = X509_get_pubkey(peer_cert)) &&
-        NULL != (rsa = EVP_PKEY_get1_RSA(pkey))) {
-        BN_print(bio, rsa->n);
-        BIO_get_mem_ptr(bio, &mem);
-        info->Set(modulus_symbol,
-                  OneByteString(node_isolate, mem->data, mem->length));
-        (void) BIO_reset(bio);
-
-        BN_print(bio, rsa->e);
-        BIO_get_mem_ptr(bio, &mem);
-        info->Set(exponent_symbol,
-                  OneByteString(node_isolate, mem->data, mem->length));
-        (void) BIO_reset(bio);
-    }
-
-    if (pkey != NULL) {
-      EVP_PKEY_free(pkey);
-      pkey = NULL;
-    }
-    if (rsa != NULL) {
-      RSA_free(rsa);
-      rsa = NULL;
-    }
-
-    ASN1_TIME_print(bio, X509_get_notBefore(peer_cert));
-    BIO_get_mem_ptr(bio, &mem);
-    info->Set(valid_from_symbol,
-              OneByteString(node_isolate, mem->data, mem->length));
-    (void) BIO_reset(bio);
-
-    ASN1_TIME_print(bio, X509_get_notAfter(peer_cert));
-    BIO_get_mem_ptr(bio, &mem);
-    info->Set(valid_to_symbol,
-              OneByteString(node_isolate, mem->data, mem->length));
-    BIO_free_all(bio);
-
-    unsigned int md_size, i;
-    unsigned char md[EVP_MAX_MD_SIZE];
-    if (X509_digest(peer_cert, EVP_sha1(), md, &md_size)) {
-      const char hex[] = "0123456789ABCDEF";
-      char fingerprint[EVP_MAX_MD_SIZE * 3];
-
-      for (i = 0; i < md_size; i++) {
-        fingerprint[3*i] = hex[(md[i] & 0xf0) >> 4];
-        fingerprint[(3*i)+1] = hex[(md[i] & 0x0f)];
-        fingerprint[(3*i)+2] = ':';
-      }
-
-      if (md_size > 0) {
-        fingerprint[(3*(md_size-1))+2] = '\0';
-      } else {
-        fingerprint[0] = '\0';
-      }
-
-      info->Set(fingerprint_symbol, OneByteString(node_isolate, fingerprint));
-    }
-
-    STACK_OF(ASN1_OBJECT) *eku = (STACK_OF(ASN1_OBJECT) *)X509_get_ext_d2i(
-        peer_cert, NID_ext_key_usage, NULL, NULL);
-    if (eku != NULL) {
-      Local<Array> ext_key_usage = Array::New();
-      char buf[256];
-
-      for (int i = 0; i < sk_ASN1_OBJECT_num(eku); i++) {
-        memset(buf, 0, sizeof(buf));
-        OBJ_obj2txt(buf, sizeof(buf) - 1, sk_ASN1_OBJECT_value(eku, i), 1);
-        ext_key_usage->Set(i, OneByteString(node_isolate, buf));
-      }
-
-      sk_ASN1_OBJECT_pop_free(eku, ASN1_OBJECT_free);
-      info->Set(ext_key_usage_symbol, ext_key_usage);
-    }
-
-    X509_free(peer_cert);
-  }
-
-  args.GetReturnValue().Set(info);
-}
-
-
-void Connection::GetSession(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
-
-  Connection* conn = Connection::Unwrap(args.This());
-
-  if (conn->ssl_ == NULL) return;
-
-  SSL_SESSION* sess = SSL_get_session(conn->ssl_);
-  if (!sess) return;
-
-  int slen = i2d_SSL_SESSION(sess, NULL);
-  assert(slen > 0);
-
-  unsigned char* sbuf = new unsigned char[slen];
-  unsigned char* p = sbuf;
-  i2d_SSL_SESSION(sess, &p);
-  args.GetReturnValue().Set(Encode(sbuf, slen, BINARY));
-  delete[] sbuf;
-}
-
-
-void Connection::SetSession(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
-
-  Connection* conn = Connection::Unwrap(args.This());
-
-  if (args.Length() < 1 ||
-      (!args[0]->IsString() && !Buffer::HasInstance(args[0]))) {
-    return ThrowTypeError("Bad argument");
-  }
-
-  ASSERT_IS_BUFFER(args[0]);
-  ssize_t slen = Buffer::Length(args[0]);
-
-  if (slen < 0) {
-    return ThrowTypeError("Bad argument");
-  }
-
-  char* sbuf = new char[slen];
-
-  ssize_t wlen = DecodeWrite(sbuf, slen, args[0], BINARY);
-  assert(wlen == slen);
-
-  const unsigned char* p = reinterpret_cast<const unsigned char*>(sbuf);
-  SSL_SESSION* sess = d2i_SSL_SESSION(NULL, &p, wlen);
-
-  delete [] sbuf;
-
-  if (!sess) return;
-
-  int r = SSL_set_session(conn->ssl_, sess);
-  SSL_SESSION_free(sess);
-
-  if (!r) {
-    return ThrowError("SSL_set_session error");
-  }
-}
-
-
-void Connection::LoadSession(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
-
-  Connection* conn = Connection::Unwrap(args.This());
-
-  if (args.Length() >= 1 && Buffer::HasInstance(args[0])) {
-    ssize_t slen = Buffer::Length(args[0].As<Object>());
-    char* sbuf = Buffer::Data(args[0].As<Object>());
-
-    const unsigned char* p = reinterpret_cast<unsigned char*>(sbuf);
-    SSL_SESSION* sess = d2i_SSL_SESSION(NULL, &p, slen);
-
-    // Setup next session and move hello to the BIO buffer
-    if (conn->next_sess_ != NULL) {
-      SSL_SESSION_free(conn->next_sess_);
-    }
-    conn->next_sess_ = sess;
-  }
-
-  conn->hello_parser_.End();
-}
-
-
-void Connection::IsSessionReused(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
-  Connection* conn = Connection::Unwrap(args.This());
-  bool yes = conn->ssl_ && SSL_session_reused(conn->ssl_);
-  args.GetReturnValue().Set(yes);
-}
-
-
 void Connection::Start(const FunctionCallbackInfo<Value>& args) {
   HandleScope scope(node_isolate);
 
@@ -1722,7 +1977,7 @@ void Connection::Start(const FunctionCallbackInfo<Value>& args) {
 
   int rv = 0;
   if (!SSL_is_init_finished(conn->ssl_)) {
-    if (conn->is_server_) {
+    if (conn->is_server()) {
       rv = SSL_accept(conn->ssl_);
       conn->HandleSSLError("SSL_accept:Start",
                            rv,
@@ -1756,197 +2011,6 @@ void Connection::Shutdown(const FunctionCallbackInfo<Value>& args) {
 }
 
 
-void Connection::ReceivedShutdown(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
-  Connection* conn = Connection::Unwrap(args.This());
-  bool yes =
-      conn->ssl_ && SSL_get_shutdown(conn->ssl_) == SSL_RECEIVED_SHUTDOWN;
-  args.GetReturnValue().Set(yes);
-}
-
-
-void Connection::IsInitFinished(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
-  Connection* conn = Connection::Unwrap(args.This());
-  bool yes = conn->ssl_ && SSL_is_init_finished(conn->ssl_);
-  args.GetReturnValue().Set(yes);
-}
-
-
-void Connection::VerifyError(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
-
-  Connection* conn = Connection::Unwrap(args.This());
-
-  if (conn->ssl_ == NULL) {
-    return args.GetReturnValue().SetNull();
-  }
-
-  // XXX Do this check in JS land?
-  X509* peer_cert = SSL_get_peer_certificate(conn->ssl_);
-  if (peer_cert == NULL) {
-    // We requested a certificate and they did not send us one.
-    // Definitely an error.
-    // XXX is this the right error message?
-    Local<String> error_message =
-        FIXED_ONE_BYTE_STRING(node_isolate, "UNABLE_TO_GET_ISSUER_CERT");
-    Local<Value> exception = Exception::Error(error_message);
-    return args.GetReturnValue().Set(exception);
-  }
-  X509_free(peer_cert);
-
-  long x509_verify_error = SSL_get_verify_result(conn->ssl_);
-
-  Local<String> s;
-
-  switch (x509_verify_error) {
-    case X509_V_OK:
-      break;
-
-    case X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "UNABLE_TO_GET_ISSUER_CERT");
-      break;
-
-    case X509_V_ERR_UNABLE_TO_GET_CRL:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "UNABLE_TO_GET_CRL");
-      break;
-
-    case X509_V_ERR_UNABLE_TO_DECRYPT_CERT_SIGNATURE:
-      s = FIXED_ONE_BYTE_STRING(node_isolate,
-                                "UNABLE_TO_DECRYPT_CERT_SIGNATURE");
-      break;
-
-    case X509_V_ERR_UNABLE_TO_DECRYPT_CRL_SIGNATURE:
-      s = FIXED_ONE_BYTE_STRING(node_isolate,
-                                "UNABLE_TO_DECRYPT_CRL_SIGNATURE");
-      break;
-
-    case X509_V_ERR_UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY:
-      s = FIXED_ONE_BYTE_STRING(node_isolate,
-                                "UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY");
-      break;
-
-    case X509_V_ERR_CERT_SIGNATURE_FAILURE:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "CERT_SIGNATURE_FAILURE");
-      break;
-
-    case X509_V_ERR_CRL_SIGNATURE_FAILURE:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "CRL_SIGNATURE_FAILURE");
-      break;
-
-    case X509_V_ERR_CERT_NOT_YET_VALID:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "CERT_NOT_YET_VALID");
-      break;
-
-    case X509_V_ERR_CERT_HAS_EXPIRED:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "CERT_HAS_EXPIRED");
-      break;
-
-    case X509_V_ERR_CRL_NOT_YET_VALID:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "CRL_NOT_YET_VALID");
-      break;
-
-    case X509_V_ERR_CRL_HAS_EXPIRED:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "CRL_HAS_EXPIRED");
-      break;
-
-    case X509_V_ERR_ERROR_IN_CERT_NOT_BEFORE_FIELD:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "ERROR_IN_CERT_NOT_BEFORE_FIELD");
-      break;
-
-    case X509_V_ERR_ERROR_IN_CERT_NOT_AFTER_FIELD:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "ERROR_IN_CERT_NOT_AFTER_FIELD");
-      break;
-
-    case X509_V_ERR_ERROR_IN_CRL_LAST_UPDATE_FIELD:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "ERROR_IN_CRL_LAST_UPDATE_FIELD");
-      break;
-
-    case X509_V_ERR_ERROR_IN_CRL_NEXT_UPDATE_FIELD:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "ERROR_IN_CRL_NEXT_UPDATE_FIELD");
-      break;
-
-    case X509_V_ERR_OUT_OF_MEM:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "OUT_OF_MEM");
-      break;
-
-    case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "DEPTH_ZERO_SELF_SIGNED_CERT");
-      break;
-
-    case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "SELF_SIGNED_CERT_IN_CHAIN");
-      break;
-
-    case X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY:
-      s = FIXED_ONE_BYTE_STRING(node_isolate,
-                                "UNABLE_TO_GET_ISSUER_CERT_LOCALLY");
-      break;
-
-    case X509_V_ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE:
-      s = FIXED_ONE_BYTE_STRING(node_isolate,
-                                "UNABLE_TO_VERIFY_LEAF_SIGNATURE");
-      break;
-
-    case X509_V_ERR_CERT_CHAIN_TOO_LONG:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "CERT_CHAIN_TOO_LONG");
-      break;
-
-    case X509_V_ERR_CERT_REVOKED:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "CERT_REVOKED");
-      break;
-
-    case X509_V_ERR_INVALID_CA:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "INVALID_CA");
-      break;
-
-    case X509_V_ERR_PATH_LENGTH_EXCEEDED:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "PATH_LENGTH_EXCEEDED");
-      break;
-
-    case X509_V_ERR_INVALID_PURPOSE:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "INVALID_PURPOSE");
-      break;
-
-    case X509_V_ERR_CERT_UNTRUSTED:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "CERT_UNTRUSTED");
-      break;
-
-    case X509_V_ERR_CERT_REJECTED:
-      s = FIXED_ONE_BYTE_STRING(node_isolate, "CERT_REJECTED");
-      break;
-
-    default:
-      s = OneByteString(node_isolate,
-                        X509_verify_cert_error_string(x509_verify_error));
-      break;
-  }
-
-  if (s.IsEmpty())
-    args.GetReturnValue().SetNull();
-  else
-    args.GetReturnValue().Set(Exception::Error(s));
-}
-
-
-void Connection::GetCurrentCipher(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
-
-  Connection* conn = Connection::Unwrap(args.This());
-  if (conn->ssl_ == NULL) return;
-
-  OPENSSL_CONST SSL_CIPHER *c = SSL_get_current_cipher(conn->ssl_);
-  if (c == NULL) return;
-
-  Local<Object> info = Object::New();
-  const char* cipher_name = SSL_CIPHER_get_name(c);
-  info->Set(name_symbol, OneByteString(node_isolate, cipher_name));
-  const char* cipher_version = SSL_CIPHER_get_version(c);
-  info->Set(version_symbol, OneByteString(node_isolate, cipher_version));
-  args.GetReturnValue().Set(info);
-}
-
-
 void Connection::Close(const FunctionCallbackInfo<Value>& args) {
   HandleScope scope(node_isolate);
 
@@ -1959,51 +2023,13 @@ void Connection::Close(const FunctionCallbackInfo<Value>& args) {
 }
 
 
-#ifdef OPENSSL_NPN_NEGOTIATED
-void Connection::GetNegotiatedProto(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
-
-  Connection* conn = Connection::Unwrap(args.This());
-
-  if (conn->is_server_) {
-    const unsigned char* npn_proto;
-    unsigned int npn_proto_len;
-
-    SSL_get0_next_proto_negotiated(conn->ssl_, &npn_proto, &npn_proto_len);
-
-    if (!npn_proto) {
-      return args.GetReturnValue().Set(false);
-    }
-
-    args.GetReturnValue().Set(
-        OneByteString(node_isolate, npn_proto, npn_proto_len));
-  } else {
-    args.GetReturnValue().Set(conn->selectedNPNProto_);
-  }
-}
-
-
-void Connection::SetNPNProtocols(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
-
-  Connection* conn = Connection::Unwrap(args.This());
-
-  if (args.Length() < 1 || !Buffer::HasInstance(args[0])) {
-    return ThrowError("Must give a Buffer as first argument");
-  }
-
-  conn->npnProtos_.Reset(node_isolate, args[0].As<Object>());
-}
-#endif
-
-
 #ifdef SSL_CTRL_SET_TLSEXT_SERVERNAME_CB
 void Connection::GetServername(const FunctionCallbackInfo<Value>& args) {
   HandleScope scope(node_isolate);
 
   Connection* conn = Connection::Unwrap(args.This());
 
-  if (conn->is_server_ && !conn->servername_.IsEmpty()) {
+  if (conn->is_server() && !conn->servername_.IsEmpty()) {
     args.GetReturnValue().Set(conn->servername_);
   } else {
     args.GetReturnValue().Set(false);
@@ -2027,9 +2053,7 @@ void Connection::SetSNICallback(const FunctionCallbackInfo<Value>& args) {
 #endif
 
 
-void CipherBase::Initialize(Handle<Object> target) {
-  HandleScope scope(node_isolate);
-
+void CipherBase::Initialize(Environment* env, Handle<Object> target) {
   Local<FunctionTemplate> t = FunctionTemplate::New(New);
 
   t->InstanceTemplate()->SetInternalFieldCount(1);
@@ -2182,7 +2206,8 @@ bool CipherBase::Update(const char* data,
 
 
 void CipherBase::Update(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope handle_scope(args.GetIsolate());
 
   CipherBase* cipher = ObjectWrap::Unwrap<CipherBase>(args.This());
 
@@ -2214,7 +2239,7 @@ void CipherBase::Update(const FunctionCallbackInfo<Value>& args) {
     return ThrowCryptoTypeError(ERR_get_error());
   }
 
-  Local<Object> buf = Buffer::New(reinterpret_cast<char*>(out), out_len);
+  Local<Object> buf = Buffer::New(env, reinterpret_cast<char*>(out), out_len);
   if (out) delete[] out;
 
   args.GetReturnValue().Set(buf);
@@ -2247,7 +2272,8 @@ bool CipherBase::Final(unsigned char** out, int *out_len) {
 
 
 void CipherBase::Final(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope handle_scope(args.GetIsolate());
 
   CipherBase* cipher = ObjectWrap::Unwrap<CipherBase>(args.This());
 
@@ -2265,13 +2291,11 @@ void CipherBase::Final(const FunctionCallbackInfo<Value>& args) {
   }
 
   args.GetReturnValue().Set(
-      Buffer::New(reinterpret_cast<char*>(out_value), out_len));
+      Buffer::New(env, reinterpret_cast<char*>(out_value), out_len));
 }
 
 
-void Hmac::Initialize(v8::Handle<v8::Object> target) {
-  HandleScope scope(node_isolate);
-
+void Hmac::Initialize(Environment* env, v8::Handle<v8::Object> target) {
   Local<FunctionTemplate> t = FunctionTemplate::New(New);
 
   t->InstanceTemplate()->SetInternalFieldCount(1);
@@ -2401,9 +2425,7 @@ void Hmac::HmacDigest(const FunctionCallbackInfo<Value>& args) {
 }
 
 
-void Hash::Initialize(v8::Handle<v8::Object> target) {
-  HandleScope scope(node_isolate);
-
+void Hash::Initialize(Environment* env, v8::Handle<v8::Object> target) {
   Local<FunctionTemplate> t = FunctionTemplate::New(New);
 
   t->InstanceTemplate()->SetInternalFieldCount(1);
@@ -2510,9 +2532,7 @@ void Hash::HashDigest(const FunctionCallbackInfo<Value>& args) {
 }
 
 
-void Sign::Initialize(v8::Handle<v8::Object> target) {
-  HandleScope scope(node_isolate);
-
+void Sign::Initialize(Environment* env, v8::Handle<v8::Object> target) {
   Local<FunctionTemplate> t = FunctionTemplate::New(New);
 
   t->InstanceTemplate()->SetInternalFieldCount(1);
@@ -2655,9 +2675,7 @@ void Sign::SignFinal(const FunctionCallbackInfo<Value>& args) {
 }
 
 
-void Verify::Initialize(v8::Handle<v8::Object> target) {
-  HandleScope scope(node_isolate);
-
+void Verify::Initialize(Environment* env, v8::Handle<v8::Object> target) {
   Local<FunctionTemplate> t = FunctionTemplate::New(New);
 
   t->InstanceTemplate()->SetInternalFieldCount(1);
@@ -2858,9 +2876,7 @@ void Verify::VerifyFinal(const FunctionCallbackInfo<Value>& args) {
 }
 
 
-void DiffieHellman::Initialize(v8::Handle<v8::Object> target) {
-  HandleScope scope(node_isolate);
-
+void DiffieHellman::Initialize(Environment* env, Handle<Object> target) {
   Local<FunctionTemplate> t = FunctionTemplate::New(New);
 
   t->InstanceTemplate()->SetInternalFieldCount(1);
@@ -3211,8 +3227,10 @@ bool DiffieHellman::VerifyContext() {
 }
 
 
+// TODO(bnoordhuis) Turn into proper RAII class.
 struct pbkdf2_req {
   uv_work_t work_req;
+  Environment* env;
   int err;
   char* pass;
   size_t passlen;
@@ -3266,7 +3284,9 @@ void EIO_PBKDF2After(pbkdf2_req* req, Local<Value> argv[2]) {
 void EIO_PBKDF2After(uv_work_t* work_req, int status) {
   assert(status == 0);
   pbkdf2_req* req = container_of(work_req, pbkdf2_req, work_req);
-  HandleScope scope(node_isolate);
+  Environment* env = req->env;
+  Context::Scope context_scope(env->context());
+  HandleScope handle_scope(env->isolate());
   // Create a new Local that's associated with the current HandleScope.
   // PersistentToLocal() returns a handle that gets zeroed when we call
   // Dispose() so don't use that.
@@ -3274,12 +3294,13 @@ void EIO_PBKDF2After(uv_work_t* work_req, int status) {
   req->obj.Dispose();
   Local<Value> argv[2];
   EIO_PBKDF2After(req, argv);
-  MakeCallback(obj, "ondone", ARRAY_SIZE(argv), argv);
+  MakeCallback(env, obj, "ondone", ARRAY_SIZE(argv), argv);
 }
 
 
 void PBKDF2(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope handle_scope(args.GetIsolate());
 
   const char* type_error = NULL;
   char* pass = NULL;
@@ -3342,6 +3363,7 @@ void PBKDF2(const FunctionCallbackInfo<Value>& args) {
   }
 
   req = new pbkdf2_req;
+  req->env = env;
   req->err = 0;
   req->pass = pass;
   req->passlen = passlen;
@@ -3354,8 +3376,11 @@ void PBKDF2(const FunctionCallbackInfo<Value>& args) {
   if (args[4]->IsFunction()) {
     Local<Object> obj = Object::New();
     obj->Set(FIXED_ONE_BYTE_STRING(node_isolate, "ondone"), args[4]);
+    if (env->in_domain()) {
+      obj->Set(env->domain_string(), env->domain_array()->Get(0));
+    }
     req->obj.Reset(node_isolate, obj);
-    uv_queue_work(uv_default_loop(),
+    uv_queue_work(env->event_loop(),
                   &req->work_req,
                   EIO_PBKDF2,
                   EIO_PBKDF2After);
@@ -3377,8 +3402,10 @@ void PBKDF2(const FunctionCallbackInfo<Value>& args) {
 }
 
 
+// TODO(bnoordhuis) Turn into proper RAII class.
 struct RandomBytesRequest {
   ~RandomBytesRequest();
+  Environment* env_;
   Persistent<Object> obj_;
   unsigned long error_;  // openssl error code or zero
   uv_work_t work_req_;
@@ -3421,7 +3448,7 @@ void RandomBytesCheck(RandomBytesRequest* req, Local<Value> argv[2]) {
   if (req->error_) {
     char errmsg[256] = "Operation not supported";
 
-    if (req->error_ != (unsigned long) -1)
+    if (req->error_ != static_cast<unsigned long>(-1))
       ERR_error_string_n(req->error_, errmsg, sizeof errmsg);
 
     argv[0] = Exception::Error(OneByteString(node_isolate, errmsg));
@@ -3429,7 +3456,9 @@ void RandomBytesCheck(RandomBytesRequest* req, Local<Value> argv[2]) {
   } else {
     argv[0] = Null(node_isolate);
     argv[1] = Buffer::Use(req->data_, req->size_);
+    req->data_ = NULL;
   }
+  free(req->data_);
 }
 
 
@@ -3438,17 +3467,21 @@ void RandomBytesAfter(uv_work_t* work_req, int status) {
   RandomBytesRequest* req = container_of(work_req,
                                          RandomBytesRequest,
                                          work_req_);
-  HandleScope scope(node_isolate);
+  Environment* env = req->env_;
+  Context::Scope context_scope(env->context());
+  HandleScope handle_scope(env->isolate());
   Local<Value> argv[2];
   RandomBytesCheck(req, argv);
-  MakeCallback(req->obj_, "ondone", ARRAY_SIZE(argv), argv);
+  Local<Object> obj = PersistentToLocal(node_isolate, req->obj_);
+  MakeCallback(env, obj, "ondone", ARRAY_SIZE(argv), argv);
   delete req;
 }
 
 
 template <bool pseudoRandom>
 void RandomBytes(const FunctionCallbackInfo<Value>& args) {
-  HandleScope scope(node_isolate);
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
+  HandleScope handle_scope(args.GetIsolate());
 
   // maybe allow a buffer to write to? cuts down on object creation
   // when generating random data in a loop
@@ -3462,16 +3495,26 @@ void RandomBytes(const FunctionCallbackInfo<Value>& args) {
   }
 
   RandomBytesRequest* req = new RandomBytesRequest();
+  req->env_ = env;
   req->error_ = 0;
-  req->data_ = new char[size];
   req->size_ = size;
+  req->data_ = static_cast<char*>(malloc(size));
+
+  if (req->data_ == NULL) {
+    delete req;
+    V8::LowMemoryNotification();
+    return ThrowError("Out of memory");
+  }
 
   if (args[1]->IsFunction()) {
     Local<Object> obj = Object::New();
     obj->Set(FIXED_ONE_BYTE_STRING(node_isolate, "ondone"), args[1]);
+    if (env->in_domain()) {
+      obj->Set(env->domain_string(), env->domain_array()->Get(0));
+    }
     req->obj_.Reset(node_isolate, obj);
 
-    uv_queue_work(uv_default_loop(),
+    uv_queue_work(env->event_loop(),
                   &req->work_req_,
                   RandomBytesWork<pseudoRandom>,
                   RandomBytesAfter);
@@ -3545,9 +3588,7 @@ void GetHashes(const FunctionCallbackInfo<Value>& args) {
 }
 
 
-void InitCrypto(Handle<Object> target) {
-  HandleScope scope(node_isolate);
-
+void InitCryptoOnce() {
   SSL_library_init();
   OpenSSL_add_all_algorithms();
   OpenSSL_add_all_digests();
@@ -3558,7 +3599,7 @@ void InitCrypto(Handle<Object> target) {
   CRYPTO_set_locking_callback(crypto_lock_cb);
   CRYPTO_THREADID_set_callback(crypto_threadid_cb);
 
-  // Turn off compression. Saves memory - do it in userland.
+  // Turn off compression. Saves memory and protects against BEAST attacks.
 #if !defined(OPENSSL_NO_COMP)
 #if OPENSSL_VERSION_NUMBER < 0x00908000L
   STACK_OF(SSL_COMP)* comp_methods = SSL_COMP_get_compression_method();
@@ -3568,15 +3609,25 @@ void InitCrypto(Handle<Object> target) {
   sk_SSL_COMP_zero(comp_methods);
   assert(sk_SSL_COMP_num(comp_methods) == 0);
 #endif
+}
 
-  SecureContext::Initialize(target);
-  Connection::Initialize(target);
-  CipherBase::Initialize(target);
-  DiffieHellman::Initialize(target);
-  Hmac::Initialize(target);
-  Hash::Initialize(target);
-  Sign::Initialize(target);
-  Verify::Initialize(target);
+
+// FIXME(bnoordhuis) Handle global init correctly.
+void InitCrypto(Handle<Object> target,
+                Handle<Value> unused,
+                Handle<Context> context) {
+  static uv_once_t init_once = UV_ONCE_INIT;
+  uv_once(&init_once, InitCryptoOnce);
+
+  Environment* env = Environment::GetCurrent(context);
+  SecureContext::Initialize(env, target);
+  Connection::Initialize(env, target);
+  CipherBase::Initialize(env, target);
+  DiffieHellman::Initialize(env, target);
+  Hmac::Initialize(env, target);
+  Hash::Initialize(env, target);
+  Sign::Initialize(env, target);
+  Verify::Initialize(env, target);
 
   NODE_SET_METHOD(target, "PBKDF2", PBKDF2);
   NODE_SET_METHOD(target, "randomBytes", RandomBytes<false>);
@@ -3584,21 +3635,9 @@ void InitCrypto(Handle<Object> target) {
   NODE_SET_METHOD(target, "getSSLCiphers", GetSSLCiphers);
   NODE_SET_METHOD(target, "getCiphers", GetCiphers);
   NODE_SET_METHOD(target, "getHashes", GetHashes);
-
-  subject_symbol = FIXED_ONE_BYTE_STRING(node_isolate, "subject");
-  issuer_symbol = FIXED_ONE_BYTE_STRING(node_isolate, "issuer");
-  valid_from_symbol = FIXED_ONE_BYTE_STRING(node_isolate, "valid_from");
-  valid_to_symbol = FIXED_ONE_BYTE_STRING(node_isolate, "valid_to");
-  subjectaltname_symbol = FIXED_ONE_BYTE_STRING(node_isolate, "subjectaltname");
-  modulus_symbol = FIXED_ONE_BYTE_STRING(node_isolate, "modulus");
-  exponent_symbol = FIXED_ONE_BYTE_STRING(node_isolate, "exponent");
-  fingerprint_symbol = FIXED_ONE_BYTE_STRING(node_isolate, "fingerprint");
-  name_symbol = FIXED_ONE_BYTE_STRING(node_isolate, "name");
-  version_symbol = FIXED_ONE_BYTE_STRING(node_isolate, "version");
-  ext_key_usage_symbol = FIXED_ONE_BYTE_STRING(node_isolate, "ext_key_usage");
 }
 
 }  // namespace crypto
 }  // namespace node
 
-NODE_MODULE(node_crypto, node::crypto::InitCrypto)
+NODE_MODULE_CONTEXT_AWARE(node_crypto, node::crypto::InitCrypto)

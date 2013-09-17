@@ -55,6 +55,8 @@
 
     startup.processChannel();
 
+    startup.processRawDebug();
+
     startup.resolveArgv0();
 
     // There are various modes that Node can run in. The most common two
@@ -83,7 +85,7 @@
       var path = NativeModule.require('path');
       process.argv[1] = path.resolve(process.argv[1]);
 
-      // If this is a worker in cluster mode, start up the communiction
+      // If this is a worker in cluster mode, start up the communication
       // channel.
       if (process.env.NODE_UNIQUE_ID) {
         var cluster = NativeModule.require('cluster');
@@ -216,60 +218,15 @@
   };
 
   startup.processFatal = function() {
-    // call into the active domain, or emit uncaughtException,
-    // and exit if there are no listeners.
     process._fatalException = function(er) {
       var caught = false;
-      if (process.domain) {
-        var domain = process.domain;
-        var domainModule = NativeModule.require('domain');
-        var domainStack = domainModule._stack;
 
-        // ignore errors on disposed domains.
-        //
-        // XXX This is a bit stupid.  We should probably get rid of
-        // domain.dispose() altogether.  It's almost always a terrible
-        // idea.  --isaacs
-        if (domain._disposed)
-          return true;
-
-        er.domain = domain;
-        er.domainThrown = true;
-        // wrap this in a try/catch so we don't get infinite throwing
-        try {
-          // One of three things will happen here.
-          //
-          // 1. There is a handler, caught = true
-          // 2. There is no handler, caught = false
-          // 3. It throws, caught = false
-          //
-          // If caught is false after this, then there's no need to exit()
-          // the domain, because we're going to crash the process anyway.
-          caught = domain.emit('error', er);
-
-          // Exit all domains on the stack.  Uncaught exceptions end the
-          // current tick and no domains should be left on the stack
-          // between ticks.
-          var domainModule = NativeModule.require('domain');
-          domainStack.length = 0;
-          domainModule.active = process.domain = null;
-        } catch (er2) {
-          // The domain error handler threw!  oh no!
-          // See if another domain can catch THIS error,
-          // or else crash on the original one.
-          // If the user already exited it, then don't double-exit.
-          if (domain === domainModule.active)
-            domainStack.pop();
-          if (domainStack.length) {
-            var parentDomain = domainStack[domainStack.length - 1];
-            process.domain = domainModule.active = parentDomain;
-            caught = process._fatalException(er2);
-          } else
-            caught = false;
-        }
+      if (process.domain && process.domain._errorHandler) {
+        caught = process.domain._errorHandler(er);
       } else {
         caught = process.emit('uncaughtException', er);
       }
+
       // if someone handled it, then great.  otherwise, die in C++ land
       // since that means that we'll exit the process, emit the 'exit' event
       if (!caught) {
@@ -281,19 +238,18 @@
         } catch (er) {
           // nothing to be done about it at this point.
         }
-      }
+
       // if we handled an error, then make sure any ticks get processed
-      if (caught)
+      } else {
         setImmediate(process._tickCallback);
+      }
+
       return caught;
     };
   };
 
   var assert;
   startup.processAssert = function() {
-    // Note that calls to assert() are pre-processed out by JS2C for the
-    // normal build of node. They persist only in the node_g build.
-    // Similarly for debug().
     assert = process.assert = function(x, msg) {
       if (!x) throw new Error(msg || 'assertion error');
     };
@@ -317,16 +273,15 @@
   startup.processNextTick = function() {
     var nextTickQueue = [];
 
-    // this infoBox thing is used so that the C++ code in src/node.cc
+    // This tickInfo thing is used so that the C++ code in src/node.cc
     // can have easy accesss to our nextTick state, and avoid unnecessary
-    // calls into process._tickCallback.
-    // order is [length, index, inTick, lastThrew]
-    // Never write code like this without very good reason!
-    var infoBox = process._tickInfoBox;
-    var length = 0;
-    var index = 1;
-    var inTick = 2;
-    var lastThrew = 3;
+    var tickInfo = process._tickInfo;
+
+    // *Must* match Environment::TickInfo::Fields in src/env.h.
+    var kInTick = 0;
+    var kIndex = 1;
+    var kLastThrew = 2;
+    var kLength = 3;
 
     process.nextTick = nextTick;
     // needs to be accessible from cc land
@@ -334,33 +289,28 @@
     process._tickDomainCallback = _tickDomainCallback;
 
     function tickDone() {
-      if (infoBox[length] !== 0) {
-        if (infoBox[length] <= infoBox[index]) {
+      if (tickInfo[kLength] !== 0) {
+        if (tickInfo[kLength] <= tickInfo[kIndex]) {
           nextTickQueue = [];
-          infoBox[length] = 0;
+          tickInfo[kLength] = 0;
         } else {
-          nextTickQueue.splice(0, infoBox[index]);
-          infoBox[length] = nextTickQueue.length;
+          nextTickQueue.splice(0, tickInfo[kIndex]);
+          tickInfo[kLength] = nextTickQueue.length;
         }
       }
-      infoBox[inTick] = 0;
-      infoBox[index] = 0;
+      tickInfo[kInTick] = 0;
+      tickInfo[kIndex] = 0;
     }
 
     // run callbacks that have no domain
     // using domains will cause this to be overridden
     function _tickCallback() {
-      var callback, nextTickLength, threw;
+      var callback, threw;
 
-      if (infoBox[inTick] === 1) return;
-      if (infoBox[length] === 0) {
-        infoBox[index] = 0;
-        return;
-      }
-      infoBox[inTick] = 1;
+      tickInfo[kInTick] = 1;
 
-      while (infoBox[index] < infoBox[length]) {
-        callback = nextTickQueue[infoBox[index]++].callback;
+      while (tickInfo[kIndex] < tickInfo[kLength]) {
+        callback = nextTickQueue[tickInfo[kIndex]++].callback;
         threw = true;
         try {
           callback();
@@ -374,36 +324,27 @@
     }
 
     function _tickDomainCallback() {
-      var nextTickLength, tock, callback;
+      var tock, callback, domain;
 
-      if (infoBox[lastThrew] === 1) {
-        infoBox[lastThrew] = 0;
-        return;
-      }
+      tickInfo[kInTick] = 1;
 
-      if (infoBox[inTick] === 1) return;
-      if (infoBox[length] === 0) {
-        infoBox[index] = 0;
-        return;
-      }
-      infoBox[inTick] = 1;
-
-      while (infoBox[index] < infoBox[length]) {
-        tock = nextTickQueue[infoBox[index]++];
+      while (tickInfo[kIndex] < tickInfo[kLength]) {
+        tock = nextTickQueue[tickInfo[kIndex]++];
         callback = tock.callback;
-        if (tock.domain) {
-          if (tock.domain._disposed) continue;
-          tock.domain.enter();
+        domain = tock.domain;
+        if (domain) {
+          if (domain._disposed) continue;
+          domain.enter();
         }
-        infoBox[lastThrew] = 1;
+        tickInfo[kLastThrew] = 1;
         try {
           callback();
-          infoBox[lastThrew] = 0;
+          tickInfo[kLastThrew] = 0;
         } finally {
-          if (infoBox[lastThrew] === 1) tickDone();
+          if (tickInfo[kLastThrew] === 1) tickDone();
         }
-        if (tock.domain)
-          tock.domain.exit();
+        if (domain)
+          domain.exit();
       }
 
       tickDone();
@@ -418,7 +359,7 @@
         callback: callback,
         domain: process.domain || null
       });
-      infoBox[length]++;
+      tickInfo[kLength]++;
     }
   };
 
@@ -439,8 +380,8 @@
                'global.__dirname = __dirname;\n' +
                'global.require = require;\n' +
                'return require("vm").runInThisContext(' +
-               JSON.stringify(body) + ', ' +
-               JSON.stringify(name) + ', 0, true);\n';
+               JSON.stringify(body) + ', { filename: ' +
+               JSON.stringify(name) + ' });\n';
     }
     var result = module._compile(script, name + '-wrapper');
     if (process._print_eval) console.log(result);
@@ -604,12 +545,16 @@
   };
 
   startup.processKillAndExit = function() {
+    process.exitCode = 0;
     process.exit = function(code) {
+      if (code || code === 0)
+        process.exitCode = code;
+
       if (!process._exiting) {
         process._exiting = true;
-        process.emit('exit', code || 0);
+        process.emit('exit', process.exitCode || 0);
       }
-      process.reallyExit(code || 0);
+      process.reallyExit(process.exitCode || 0);
     };
 
     process.kill = function(pid, sig) {
@@ -709,7 +654,17 @@
       cp._forkChild(fd);
       assert(process.send);
     }
-  }
+  };
+
+
+  startup.processRawDebug = function() {
+    var format = NativeModule.require('util').format;
+    var rawDebug = process._rawDebug;
+    process._rawDebug = function() {
+      rawDebug(format.apply(null, arguments));
+    };
+  };
+
 
   startup.resolveArgv0 = function() {
     var cwd = process.cwd();
@@ -731,8 +686,11 @@
   // core modules found in lib/*.js. All core modules are compiled into the
   // node binary, so they can be loaded faster.
 
-  var Script = process.binding('evals').NodeScript;
-  var runInThisContext = Script.runInThisContext;
+  var ContextifyScript = process.binding('contextify').ContextifyScript;
+  function runInThisContext(code, options) {
+    var script = new ContextifyScript(code, options);
+    return script.runInThisContext();
+  }
 
   function NativeModule(id) {
     this.filename = id + '.js';
@@ -793,7 +751,7 @@
     var source = NativeModule.getSource(this.id);
     source = NativeModule.wrap(source);
 
-    var fn = runInThisContext(source, this.filename, 0, true);
+    var fn = runInThisContext(source, { filename: this.filename });
     fn(this.exports, NativeModule.require, this, this.filename);
 
     this.loaded = true;

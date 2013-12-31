@@ -21,6 +21,8 @@
 
 #define CARES_STATICLIB
 #include "ares.h"
+#include "async-wrap.h"
+#include "async-wrap-inl.h"
 #include "env.h"
 #include "env-inl.h"
 #include "node.h"
@@ -56,7 +58,6 @@ using v8::Integer;
 using v8::Local;
 using v8::Null;
 using v8::Object;
-using v8::Persistent;
 using v8::String;
 using v8::Value;
 
@@ -64,8 +65,10 @@ typedef class ReqWrap<uv_getaddrinfo_t> GetAddrInfoReqWrap;
 
 
 static int cmp_ares_tasks(const ares_task_t* a, const ares_task_t* b) {
-  if (a->sock < b->sock) return -1;
-  if (a->sock > b->sock) return 1;
+  if (a->sock < b->sock)
+    return -1;
+  if (a->sock > b->sock)
+    return 1;
   return 0;
 }
 
@@ -84,7 +87,7 @@ static void ares_timeout(uv_timer_t* handle, int status) {
 
 
 static void ares_poll_cb(uv_poll_t* watcher, int status, int events) {
-  ares_task_t* task = container_of(watcher, ares_task_t, poll_watcher);
+  ares_task_t* task = CONTAINER_OF(watcher, ares_task_t, poll_watcher);
   Environment* env = task->env;
 
   /* Reset the idle timer */
@@ -105,7 +108,7 @@ static void ares_poll_cb(uv_poll_t* watcher, int status, int events) {
 
 
 static void ares_poll_close_cb(uv_handle_t* watcher) {
-  ares_task_t* task = container_of(watcher, ares_task_t, poll_watcher);
+  ares_task_t* task = CONTAINER_OF(watcher, ares_task_t, poll_watcher);
   free(task);
 }
 
@@ -218,11 +221,10 @@ static Local<Array> HostentToNames(struct hostent* host) {
 }
 
 
-class QueryWrap {
+class QueryWrap : public AsyncWrap {
  public:
-  QueryWrap(Environment* env, Local<Object> req_wrap_obj) : env_(env) {
-    HandleScope scope(node_isolate);
-    persistent().Reset(node_isolate, req_wrap_obj);
+  QueryWrap(Environment* env, Local<Object> req_wrap_obj)
+      : AsyncWrap(env, req_wrap_obj) {
   }
 
   virtual ~QueryWrap() {
@@ -239,14 +241,6 @@ class QueryWrap {
   virtual int Send(const char* name, int family) {
     assert(0);
     return 0;
-  }
-
-  inline Persistent<Object>& persistent() {
-    return object_;
-  }
-
-  inline Local<Object> object() {
-    return PersistentToLocal(node_isolate, persistent());
   }
 
  protected:
@@ -281,46 +275,66 @@ class QueryWrap {
   }
 
   void CallOnComplete(Local<Value> answer) {
-    Context::Scope context_scope(env()->context());
     HandleScope handle_scope(env()->isolate());
+    Context::Scope context_scope(env()->context());
     Local<Value> argv[] = {
       Integer::New(0, env()->isolate()),
       answer
     };
-    MakeCallback(env(),
-                 object(),
-                 env()->oncomplete_string(),
-                 ARRAY_SIZE(argv),
-                 argv);
+    MakeCallback(env()->oncomplete_string(), ARRAY_SIZE(argv), argv);
   }
 
   void CallOnComplete(Local<Value> answer, Local<Value> family) {
-    Context::Scope context_scope(env()->context());
     HandleScope handle_scope(env()->isolate());
+    Context::Scope context_scope(env()->context());
     Local<Value> argv[] = {
       Integer::New(0, env()->isolate()),
       answer,
       family
     };
-    MakeCallback(env(),
-                 object(),
-                 env()->oncomplete_string(),
-                 ARRAY_SIZE(argv),
-                 argv);
+    MakeCallback(env()->oncomplete_string(), ARRAY_SIZE(argv), argv);
   }
 
   void ParseError(int status) {
     assert(status != ARES_SUCCESS);
-    Context::Scope context_scope(env()->context());
     HandleScope handle_scope(env()->isolate());
-    Local<Value> argv[] = {
-      Integer::New(status, env()->isolate())
-    };
-    MakeCallback(env(),
-                 object(),
-                 env()->oncomplete_string(),
-                 ARRAY_SIZE(argv),
-                 argv);
+    Context::Scope context_scope(env()->context());
+    Local<Value> arg;
+    switch (status) {
+#define V(code)                                                               \
+      case ARES_ ## code:                                                     \
+        arg = FIXED_ONE_BYTE_STRING(env()->isolate(), #code);                 \
+        break;
+      V(ENODATA)
+      V(EFORMERR)
+      V(ESERVFAIL)
+      V(ENOTFOUND)
+      V(ENOTIMP)
+      V(EREFUSED)
+      V(EBADQUERY)
+      V(EBADNAME)
+      V(EBADFAMILY)
+      V(EBADRESP)
+      V(ECONNREFUSED)
+      V(ETIMEOUT)
+      V(EOF)
+      V(EFILE)
+      V(ENOMEM)
+      V(EDESTRUCTION)
+      V(EBADSTR)
+      V(EBADFLAGS)
+      V(ENONAME)
+      V(EBADHINTS)
+      V(ENOTINITIALIZED)
+      V(ELOADIPHLPAPI)
+      V(EADDRGETNETWORKPARAMS)
+      V(ECANCELLED)
+#undef V
+      default:
+        arg = FIXED_ONE_BYTE_STRING(env()->isolate(), "UNKNOWN_ARES_ERROR");
+        break;
+    }
+    MakeCallback(env()->oncomplete_string(), 1, &arg);
   }
 
   // Subclasses should implement the appropriate Parse method.
@@ -331,14 +345,6 @@ class QueryWrap {
   virtual void Parse(struct hostent* host) {
     assert(0);
   };
-
-  inline Environment* env() const {
-    return env_;
-  }
-
- private:
-  Persistent<Object> object_;
-  Environment* const env_;
 };
 
 
@@ -360,13 +366,14 @@ class QueryAWrap: public QueryWrap {
 
  protected:
   void Parse(unsigned char* buf, int len) {
-    HandleScope scope(node_isolate);
+    HandleScope handle_scope(env()->isolate());
+    Context::Scope context_scope(env()->context());
 
     struct hostent* host;
 
     int status = ares_parse_a_reply(buf, len, &host, NULL, NULL);
     if (status != ARES_SUCCESS) {
-      this->ParseError(status);
+      ParseError(status);
       return;
     }
 
@@ -396,13 +403,14 @@ class QueryAaaaWrap: public QueryWrap {
 
  protected:
   void Parse(unsigned char* buf, int len) {
-    HandleScope scope(node_isolate);
+    HandleScope handle_scope(env()->isolate());
+    Context::Scope context_scope(env()->context());
 
     struct hostent* host;
 
     int status = ares_parse_aaaa_reply(buf, len, &host, NULL, NULL);
     if (status != ARES_SUCCESS) {
-      this->ParseError(status);
+      ParseError(status);
       return;
     }
 
@@ -432,13 +440,13 @@ class QueryCnameWrap: public QueryWrap {
 
  protected:
   void Parse(unsigned char* buf, int len) {
-    HandleScope scope(node_isolate);
-
+    HandleScope handle_scope(env()->isolate());
+    Context::Scope context_scope(env()->context());
     struct hostent* host;
 
     int status = ares_parse_a_reply(buf, len, &host, NULL, NULL);
     if (status != ARES_SUCCESS) {
-      this->ParseError(status);
+      ParseError(status);
       return;
     }
 
@@ -471,12 +479,13 @@ class QueryMxWrap: public QueryWrap {
 
  protected:
   void Parse(unsigned char* buf, int len) {
-    HandleScope scope(node_isolate);
+    HandleScope handle_scope(env()->isolate());
+    Context::Scope context_scope(env()->context());
 
     struct ares_mx_reply* mx_start;
     int status = ares_parse_mx_reply(buf, len, &mx_start);
     if (status != ARES_SUCCESS) {
-      this->ParseError(status);
+      ParseError(status);
       return;
     }
 
@@ -521,11 +530,13 @@ class QueryNsWrap: public QueryWrap {
 
  protected:
   void Parse(unsigned char* buf, int len) {
+    HandleScope handle_scope(env()->isolate());
+    Context::Scope context_scope(env()->context());
     struct hostent* host;
 
     int status = ares_parse_ns_reply(buf, len, &host);
     if (status != ARES_SUCCESS) {
-      this->ParseError(status);
+      ParseError(status);
       return;
     }
 
@@ -555,11 +566,13 @@ class QueryTxtWrap: public QueryWrap {
 
  protected:
   void Parse(unsigned char* buf, int len) {
+    HandleScope handle_scope(env()->isolate());
+    Context::Scope context_scope(env()->context());
     struct ares_txt_reply* txt_out;
 
     int status = ares_parse_txt_reply(buf, len, &txt_out);
     if (status != ARES_SUCCESS) {
-      this->ParseError(status);
+      ParseError(status);
       return;
     }
 
@@ -596,12 +609,13 @@ class QuerySrvWrap: public QueryWrap {
 
  protected:
   void Parse(unsigned char* buf, int len) {
-    HandleScope scope(node_isolate);
+    HandleScope handle_scope(env()->isolate());
+    Context::Scope context_scope(env()->context());
 
     struct ares_srv_reply* srv_start;
     int status = ares_parse_srv_reply(buf, len, &srv_start);
     if (status != ARES_SUCCESS) {
-      this->ParseError(status);
+      ParseError(status);
       return;
     }
 
@@ -653,13 +667,14 @@ class QueryNaptrWrap: public QueryWrap {
 
  protected:
   void Parse(unsigned char* buf, int len) {
-    HandleScope scope(node_isolate);
+    HandleScope handle_scope(env()->isolate());
+    Context::Scope context_scope(env()->context());
 
     ares_naptr_reply* naptr_start;
     int status = ares_parse_naptr_reply(buf, len, &naptr_start);
 
     if (status != ARES_SUCCESS) {
-      this->ParseError(status);
+      ParseError(status);
       return;
     }
 
@@ -733,8 +748,8 @@ class GetHostByAddrWrap: public QueryWrap {
 
  protected:
   void Parse(struct hostent* host) {
-    HandleScope scope(node_isolate);
-
+    HandleScope handle_scope(env()->isolate());
+    Context::Scope context_scope(env()->context());
     this->CallOnComplete(HostentToNames(host));
   }
 };
@@ -769,8 +784,8 @@ class GetHostByNameWrap: public QueryWrap {
 
 template <class Wrap>
 static void Query(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
   HandleScope handle_scope(args.GetIsolate());
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
 
   assert(!args.IsConstructCall());
   assert(args[0]->IsObject());
@@ -782,7 +797,8 @@ static void Query(const FunctionCallbackInfo<Value>& args) {
 
   String::Utf8Value name(string);
   int err = wrap->Send(*name);
-  if (err) delete wrap;
+  if (err)
+    delete wrap;
 
   args.GetReturnValue().Set(err);
 }
@@ -792,8 +808,8 @@ void AfterGetAddrInfo(uv_getaddrinfo_t* req, int status, struct addrinfo* res) {
   GetAddrInfoReqWrap* req_wrap = static_cast<GetAddrInfoReqWrap*>(req->data);
   Environment* env = req_wrap->env();
 
-  Context::Scope context_scope(env->context());
   HandleScope handle_scope(env->isolate());
+  Context::Scope context_scope(env->context());
 
   Local<Value> argv[] = {
     Integer::New(status, node_isolate),
@@ -880,11 +896,7 @@ void AfterGetAddrInfo(uv_getaddrinfo_t* req, int status, struct addrinfo* res) {
   uv_freeaddrinfo(res);
 
   // Make the callback into JavaScript
-  MakeCallback(env,
-               req_wrap->object(),
-               env->oncomplete_string(),
-               ARRAY_SIZE(argv),
-               argv);
+  req_wrap->MakeCallback(env->oncomplete_string(), ARRAY_SIZE(argv), argv);
 
   delete req_wrap;
 }
@@ -907,8 +919,8 @@ static void IsIP(const FunctionCallbackInfo<Value>& args) {
 
 
 static void GetAddrInfo(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
   HandleScope handle_scope(args.GetIsolate());
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
 
   assert(args[0]->IsObject());
   assert(args[1]->IsString());
@@ -946,15 +958,16 @@ static void GetAddrInfo(const FunctionCallbackInfo<Value>& args) {
                            NULL,
                            &hints);
   req_wrap->Dispatched();
-  if (err) delete req_wrap;
+  if (err)
+    delete req_wrap;
 
   args.GetReturnValue().Set(err);
 }
 
 
 static void GetServers(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
   HandleScope handle_scope(args.GetIsolate());
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
 
   Local<Array> server_array = Array::New();
 
@@ -983,8 +996,8 @@ static void GetServers(const FunctionCallbackInfo<Value>& args) {
 
 
 static void SetServers(const FunctionCallbackInfo<Value>& args) {
-  Environment* env = Environment::GetCurrent(args.GetIsolate());
   HandleScope handle_scope(args.GetIsolate());
+  Environment* env = Environment::GetCurrent(args.GetIsolate());
 
   assert(args[0]->IsArray());
 

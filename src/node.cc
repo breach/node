@@ -3271,7 +3271,7 @@ int Start(int argc, char** argv) {
   {
     Locker locker(node_isolate);
     Environment* env =
-        CreateEnvironment(node_isolate, argc, argv, exec_argc, exec_argv);
+        CreateEnvironment(node_isolate, argc, argv, exec_argc, exec_argv, NULL);
     // This Context::Scope is here so EnableDebug() can look up the current
     // environment with Environment::GetCurrentChecked().
     // TODO(bnoordhuis) Reorder the debugger initialization logic so it can

@@ -17,7 +17,7 @@ ACLOCAL_AMFLAGS = -I m4
 AM_CPPFLAGS = -I$(top_srcdir)/include \
               -I$(top_srcdir)/src
 
-include_HEADERS=include/uv.h include/uv-errno.h
+include_HEADERS=include/uv.h include/uv-errno.h include/uv-version.h
 
 CLEANFILES =
 
@@ -25,6 +25,7 @@ lib_LTLIBRARIES = libuv.la
 libuv_la_CFLAGS = @CFLAGS@
 libuv_la_LDFLAGS = -no-undefined -version-info 11:0:0
 libuv_la_SOURCES = src/fs-poll.c \
+                   src/heap-inl.h \
                    src/inet.c \
                    src/queue.h \
                    src/uv-common.c \
@@ -145,6 +146,8 @@ test_run_tests_SOURCES = test/blackhole-server.c \
                          test/test-ipc.c \
                          test/test-list.h \
                          test/test-loop-handles.c \
+                         test/test-loop-alive.c \
+                         test/test-loop-close.c \
                          test/test-loop-stop.c \
                          test/test-loop-time.c \
                          test/test-multiple-listen.c \
@@ -154,6 +157,9 @@ test_run_tests_SOURCES = test/blackhole-server.c \
                          test/test-ping-pong.c \
                          test/test-pipe-bind-error.c \
                          test/test-pipe-connect-error.c \
+                         test/test-pipe-getsockname.c \
+                         test/test-pipe-sendmsg.c \
+                         test/test-pipe-server-close.c \
                          test/test-platform-output.c \
                          test/test-poll-close.c \
                          test/test-poll.c \
@@ -164,6 +170,7 @@ test_run_tests_SOURCES = test/blackhole-server.c \
                          test/test-semaphore.c \
                          test/test-shutdown-close.c \
                          test/test-shutdown-eof.c \
+                         test/test-shutdown-twice.c \
                          test/test-signal-multiple-loops.c \
                          test/test-signal.c \
                          test/test-spawn.c \
@@ -194,6 +201,7 @@ test_run_tests_SOURCES = test/blackhole-server.c \
                          test/test-tty.c \
                          test/test-udp-dgram-too-big.c \
                          test/test-udp-ipv6.c \
+                         test/test-udp-multicast-interface.c \
                          test/test-udp-multicast-join.c \
                          test/test-udp-multicast-ttl.c \
                          test/test-udp-open.c \

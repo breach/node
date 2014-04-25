@@ -424,10 +424,9 @@ RB_HEAD(uv_timer_tree_s, uv_timer_s);
   uv_write_t ipc_header_write_req;                                            \
   int ipc_pid;                                                                \
   uint64_t remaining_ipc_rawdata_bytes;                                       \
-  unsigned char reserved[sizeof(void*)];                                      \
   struct {                                                                    \
-    WSAPROTOCOL_INFOW* socket_info;                                           \
-    int tcp_connection;                                                       \
+    void* queue[2];                                                           \
+    int queue_len;                                                            \
   } pending_ipc_info;                                                         \
   uv_write_t* non_overlapped_writes_tail;
 
@@ -552,9 +551,10 @@ RB_HEAD(uv_timer_tree_s, uv_timer_s);
       WCHAR* new_pathw;                                                       \
       int file_flags;                                                         \
       int fd_out;                                                             \
-      void* buf;                                                              \
-      size_t length;                                                          \
+      unsigned int nbufs;                                                     \
+      uv_buf_t* bufs;                                                         \
       int64_t offset;                                                         \
+      uv_buf_t bufsml[4];                                                     \
     };                                                                        \
     struct {                                                                  \
       double atime;                                                           \

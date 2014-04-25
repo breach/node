@@ -186,8 +186,12 @@ class LCodeGen: public LCodeGenBase {
 
   void AddDeferredCode(LDeferredCode* code) { deferred_.Add(code, zone()); }
 
+  void SaveCallerDoubles();
+  void RestoreCallerDoubles();
+
   // Code generation passes.  Returns true if code generation should
   // continue.
+  void GenerateBodyInstructionPre(LInstruction* instr) V8_OVERRIDE;
   bool GeneratePrologue();
   bool GenerateDeferredCode();
   bool GenerateDeoptJumpTable();
@@ -243,7 +247,6 @@ class LCodeGen: public LCodeGenBase {
                          int formal_parameter_count,
                          int arity,
                          LInstruction* instr,
-                         CallKind call_kind,
                          R1State r1_state);
 
   void RecordSafepointWithLazyDeopt(LInstruction* instr,
@@ -264,7 +267,6 @@ class LCodeGen: public LCodeGenBase {
                         bool is_uint32,
                         int* object_index_pointer,
                         int* dematerialized_index_pointer);
-  void RegisterDependentCodeForEmbeddedMaps(Handle<Code> code);
   void PopulateDeoptimizationData(Handle<Code> code);
   int DefineDeoptimizationLiteral(Handle<Object> literal);
 
@@ -272,6 +274,10 @@ class LCodeGen: public LCodeGenBase {
 
   Register ToRegister(int index) const;
   DwVfpRegister ToDoubleRegister(int index) const;
+
+  MemOperand BuildSeqStringOperand(Register string,
+                                   LOperand* index,
+                                   String::Encoding encoding);
 
   void EmitIntegerMathAbs(LMathAbs* instr);
 
@@ -293,6 +299,8 @@ class LCodeGen: public LCodeGenBase {
 
   static Condition TokenToCondition(Token::Value op, bool is_unsigned);
   void EmitGoto(int block);
+
+  // EmitBranch expects to be the last instruction of a block.
   template<class InstrType>
   void EmitBranch(InstrType instr, Condition condition);
   template<class InstrType>

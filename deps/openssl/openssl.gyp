@@ -929,7 +929,15 @@
               '-lgdi32.lib',
               '-luser32.lib',
             ]
-          }
+          },
+          'defines': [
+            'DSO_WIN32',
+          ],
+        }, {
+          'defines': [
+            'DSO_DLFCN',
+            'HAVE_DLFCN_H'
+          ],
         }],
         ['target_arch=="arm"', {
           'sources': ['openssl/crypto/armcap.c'],
@@ -1029,7 +1037,14 @@
               '-luser32.lib',
             ],
           },
-        }]
+        }],
+        [ 'OS in "linux android"', {
+          'link_settings': {
+            'libraries': [
+              '-ldl',
+            ],
+          },
+        }],
       ]
     }
   ],

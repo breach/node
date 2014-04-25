@@ -364,10 +364,40 @@
 # define UV__ETIMEDOUT (-4039)
 #endif
 
+#if defined(ETXTBSY) && !defined(_WIN32)
+# define UV__ETXTBSY (-ETXTBSY)
+#else
+# define UV__ETXTBSY (-4038)
+#endif
+
 #if defined(EXDEV) && !defined(_WIN32)
 # define UV__EXDEV (-EXDEV)
 #else
 # define UV__EXDEV (-4037)
+#endif
+
+#if defined(EFBIG) && !defined(_WIN32)
+# define UV__EFBIG (-EFBIG)
+#else
+# define UV__EFBIG (-4036)
+#endif
+
+#if defined(ENOPROTOOPT) && !defined(_WIN32)
+# define UV__ENOPROTOOPT (-ENOPROTOOPT)
+#else
+# define UV__ENOPROTOOPT (-4035)
+#endif
+
+#if defined(ERANGE) && !defined(_WIN32)
+# define UV__ERANGE (-ERANGE)
+#else
+# define UV__ERANGE (-4034)
+#endif
+
+#if defined(ENXIO) && !defined(_WIN32)
+# define UV__ENXIO (-ENXIO)
+#else
+# define UV__ENXIO (-4033)
 #endif
 
 #endif /* UV_ERRNO_H_ */

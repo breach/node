@@ -132,7 +132,7 @@ function TimeClip(time) {
 // strings over and over again.
 var Date_cache = {
   // Cached time value.
-  time: NAN,
+  time: 0,
   // String input for which the cached time is valid.
   string: null
 };
@@ -302,8 +302,7 @@ function DateUTC(year, month, date, hours, minutes, seconds, ms) {
 }
 
 
-// Mozilla-specific extension. Returns the number of milliseconds
-// elapsed since 1 January 1970 00:00:00 UTC.
+// ECMA 262 - 15.9.4.4
 function DateNow() {
   return %DateCurrentTime();
 }

@@ -167,11 +167,10 @@ void uv__io_poll(uv_loop_t* loop, int timeout) {
     for (i = 0; i < nfds; i++) {
       ev = events + i;
       fd = ev->ident;
-      w = loop->watchers[fd];
-
       /* Skip invalidated events, see uv__platform_invalidate_fd */
       if (fd == -1)
         continue;
+      w = loop->watchers[fd];
 
       if (w == NULL) {
         /* File descriptor that we've stopped watching, disarm it. */
@@ -332,7 +331,7 @@ int uv_fs_event_init(uv_loop_t* loop, uv_fs_event_t* handle) {
 
 int uv_fs_event_start(uv_fs_event_t* handle,
                       uv_fs_event_cb cb,
-                      const char* filename,
+                      const char* path,
                       unsigned int flags) {
 #if defined(__APPLE__)
   struct stat statbuf;
@@ -343,13 +342,13 @@ int uv_fs_event_start(uv_fs_event_t* handle,
     return -EINVAL;
 
   /* TODO open asynchronously - but how do we report back errors? */
-  fd = open(filename, O_RDONLY);
+  fd = open(path, O_RDONLY);
   if (fd == -1)
     return -errno;
 
   uv__handle_start(handle);
   uv__io_init(&handle->event_watcher, uv__fs_event, fd);
-  handle->filename = strdup(filename);
+  handle->path = strdup(path);
   handle->cb = cb;
 
 #if defined(__APPLE__)
@@ -384,13 +383,13 @@ int uv_fs_event_stop(uv_fs_event_t* handle) {
 
 #if defined(__APPLE__)
   if (uv__fsevents_close(handle))
-    uv__io_stop(handle->loop, &handle->event_watcher, UV__POLLIN);
-#else
-  uv__io_stop(handle->loop, &handle->event_watcher, UV__POLLIN);
 #endif /* defined(__APPLE__) */
+  {
+    uv__io_close(handle->loop, &handle->event_watcher);
+  }
 
-  free(handle->filename);
-  handle->filename = NULL;
+  free(handle->path);
+  handle->path = NULL;
 
   uv__close(handle->event_watcher.fd);
   handle->event_watcher.fd = -1;

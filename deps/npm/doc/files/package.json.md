@@ -9,32 +9,6 @@ file.  It must be actual JSON, not just a JavaScript object literal.
 A lot of the behavior described in this document is affected by the config
 settings described in `npm-config(7)`.
 
-## DEFAULT VALUES
-
-npm will default some values based on package contents.
-
-* `"scripts": {"start": "node server.js"}`
-
-  If there is a `server.js` file in the root of your package, then npm
-  will default the `start` command to `node server.js`.
-
-* `"scripts":{"preinstall": "node-waf clean || true; node-waf configure build"}`
-
-  If there is a `wscript` file in the root of your package, npm will
-  default the `preinstall` command to compile using node-waf.
-
-* `"scripts":{"preinstall": "node-gyp rebuild"}`
-
-  If there is a `binding.gyp` file in the root of your package, npm will
-  default the `preinstall` command to compile using node-gyp.
-
-* `"contributors": [...]`
-
-  If there is an `AUTHORS` file in the root of your package, npm will
-  treat each line as a `Name <email> (url)` format, where email and url
-  are optional.  Lines which start with a `#` or are blank, will be
-  ignored.
-
 ## name
 
 The *most* important things in your package.json are the name and version fields.
@@ -122,16 +96,8 @@ You can check [the full list of SPDX license IDs](https://spdx.org/licenses/).
 Ideally you should pick one that is
 [OSI](http://opensource.org/licenses/alphabetical) approved.
 
-If you have more complex licensing terms, or you want to provide more detail
-in your package.json file, you can use the more verbose plural form, like this:
-
-    "licenses" : [
-      { "type" : "MyLicense"
-      , "url" : "http://github.com/owner/project/path/to/license"
-      }
-    ]
-
-It's also a good idea to include a license file at the top level in your package.
+It's also a good idea to include a LICENSE file at the top level in
+your package.
 
 ## people fields: author, contributors
 
@@ -291,7 +257,7 @@ Do it like this:
 
     "repository" :
       { "type" : "git"
-      , "url" : "http://github.com/isaacs/npm.git"
+      , "url" : "http://github.com/npm/npm.git"
       }
 
     "repository" :
@@ -394,15 +360,13 @@ an argument to `git checkout`.  The default is `master`.
 
 As of version 1.1.65, you can refer to GitHub urls as just "foo": "user/foo-project". For example:
 
-```json
-{
-  "name": "foo",
-  "version": "0.0.0",
-  "dependencies": {
-    "express": "visionmedia/express"
-  }
-}
-```
+    {
+      "name": "foo",
+      "version": "0.0.0",
+      "dependencies": {
+        "express": "visionmedia/express"
+      }
+    }
 
 ## devDependencies
 
@@ -423,19 +387,17 @@ script to do this, and make the required package a devDependency.
 
 For example:
 
-```json
-{ "name": "ethopia-waza",
-  "description": "a delightfully fruity coffee varietal",
-  "version": "1.2.3",
-  "devDependencies": {
-    "coffee-script": "~1.6.3"
-  },
-  "scripts": {
-    "prepublish": "coffee -o lib/ -c src/waza.coffee"
-  },
-  "main": "lib/waza.js"
-}
-```
+    { "name": "ethopia-waza",
+      "description": "a delightfully fruity coffee varietal",
+      "version": "1.2.3",
+      "devDependencies": {
+        "coffee-script": "~1.6.3"
+      },
+      "scripts": {
+        "prepublish": "coffee -o lib/ -c src/waza.coffee"
+      },
+      "main": "lib/waza.js"
+    }
 
 The `prepublish` script will be run before publishing, so that users
 can consume the functionality without requiring them to compile it
@@ -574,6 +536,27 @@ Any config values can be overridden, but of course only "tag" and
 
 See `npm-config(7)` to see the list of config options that can be
 overridden.
+
+## DEFAULT VALUES
+
+npm will default some values based on package contents.
+
+* `"scripts": {"start": "node server.js"}`
+
+  If there is a `server.js` file in the root of your package, then npm
+  will default the `start` command to `node server.js`.
+
+* `"scripts":{"preinstall": "node-gyp rebuild"}`
+
+  If there is a `binding.gyp` file in the root of your package, npm will
+  default the `preinstall` command to compile using node-gyp.
+
+* `"contributors": [...]`
+
+  If there is an `AUTHORS` file in the root of your package, npm will
+  treat each line as a `Name <email> (url)` format, where email and url
+  are optional.  Lines which start with a `#` or are blank, will be
+  ignored.
 
 ## SEE ALSO
 

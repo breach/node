@@ -61,7 +61,8 @@ static void connect_cb(uv_connect_t* req, int status) {
   connect_cb_called++;
 
   do {
-    r = uv_try_write((uv_stream_t*) &client, zeroes, sizeof(zeroes));
+    buf = uv_buf_init(zeroes, sizeof(zeroes));
+    r = uv_try_write((uv_stream_t*) &client, &buf, 1);
     ASSERT(r >= 0);
     bytes_written += r;
 
@@ -109,7 +110,7 @@ static void start_server(void) {
   ASSERT(0 == uv_ip4_addr("0.0.0.0", TEST_PORT, &addr));
 
   ASSERT(0 == uv_tcp_init(uv_default_loop(), &server));
-  ASSERT(0 == uv_tcp_bind(&server, (struct sockaddr*) &addr));
+  ASSERT(0 == uv_tcp_bind(&server, (struct sockaddr*) &addr, 0));
   ASSERT(0 == uv_listen((uv_stream_t*) &server, 128, connection_cb));
 }
 

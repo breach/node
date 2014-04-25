@@ -60,7 +60,7 @@ const int kReferenceTypeShift = kReferenceIdBits;
 const int kDebugRegisterBits = 4;
 const int kDebugIdShift = kDebugRegisterBits;
 
-const int kDeoptTableSerializeEntryCount = 8;
+const int kDeoptTableSerializeEntryCount = 12;
 
 // ExternalReferenceTable is a helper class that defines the relationship
 // between external references and their encodings. It is used to build
@@ -364,7 +364,7 @@ class Deserializer: public SerializerDeserializer {
     high_water_[space_index] = address + size;
     HeapProfiler* profiler = isolate_->heap_profiler();
     if (profiler->is_tracking_allocations()) {
-      profiler->NewObjectEvent(address, size);
+      profiler->AllocationEvent(address, size);
     }
     return address;
   }
@@ -377,6 +377,7 @@ class Deserializer: public SerializerDeserializer {
     return HeapObject::FromAddress(high_water_[space] - offset);
   }
 
+  void FlushICacheForNewCodeObjects();
 
   // Cached current isolate.
   Isolate* isolate_;

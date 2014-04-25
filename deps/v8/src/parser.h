@@ -47,24 +47,6 @@ class Target;
 template <typename T> class ZoneListWrapper;
 
 
-class ParserMessage : public Malloced {
- public:
-  ParserMessage(Scanner::Location loc, const char* message,
-                Vector<const char*> args)
-      : loc_(loc),
-        message_(message),
-        args_(args) { }
-  ~ParserMessage();
-  Scanner::Location location() { return loc_; }
-  const char* message() { return message_; }
-  Vector<const char*> args() { return args_; }
- private:
-  Scanner::Location loc_;
-  const char* message_;
-  Vector<const char*> args_;
-};
-
-
 class FunctionEntry BASE_EMBEDDED {
  public:
   enum {
@@ -436,7 +418,12 @@ class Parser : public ParserBase {
   // Parses the source code represented by the compilation info and sets its
   // function literal.  Returns false (and deallocates any allocated AST
   // nodes) if parsing failed.
-  static bool Parse(CompilationInfo* info) { return Parser(info).Parse(); }
+  static bool Parse(CompilationInfo* info,
+                    bool allow_lazy = false) {
+    Parser parser(info);
+    parser.set_allow_lazy(allow_lazy);
+    return parser.Parse();
+  }
   bool Parse();
 
  private:
@@ -464,9 +451,7 @@ class Parser : public ParserBase {
 
   class FunctionState BASE_EMBEDDED {
    public:
-    FunctionState(Parser* parser,
-                  Scope* scope,
-                  Isolate* isolate);
+    FunctionState(Parser* parser, Scope* scope);
     ~FunctionState();
 
     int NextMaterializedLiteralIndex() {
@@ -536,6 +521,10 @@ class Parser : public ParserBase {
     Mode old_mode_;
   };
 
+  virtual bool is_classic_mode() {
+    return top_scope_->is_classic_mode();
+  }
+
   // Returns NULL if parsing failed.
   FunctionLiteral* ParseProgram();
 
@@ -551,7 +540,6 @@ class Parser : public ParserBase {
                                   Handle<String> source);
 
   // Report syntax error
-  void ReportUnexpectedToken(Token::Value token);
   void ReportInvalidPreparseData(Handle<String> name, bool* ok);
   void ReportMessage(const char* message, Vector<const char*> args);
   void ReportMessage(const char* message, Vector<Handle<String> > args);
@@ -653,25 +641,6 @@ class Parser : public ParserBase {
   Expression* ParseObjectLiteral(bool* ok);
   Expression* ParseRegExpLiteral(bool seen_equal, bool* ok);
 
-  // Populate the constant properties fixed array for a materialized object
-  // literal.
-  void BuildObjectLiteralConstantProperties(
-      ZoneList<ObjectLiteral::Property*>* properties,
-      Handle<FixedArray> constants,
-      bool* is_simple,
-      bool* fast_elements,
-      int* depth,
-      bool* may_store_doubles);
-
-  // Decide if a property should be in the object boilerplate.
-  bool IsBoilerplateProperty(ObjectLiteral::Property* property);
-  // If the expression is a literal, return the literal value;
-  // if the expression is a materialized literal and is simple return a
-  // compile time value as encoded by CompileTimeValue::GetValue().
-  // Otherwise, return undefined literal as the placeholder
-  // in the object literal boilerplate.
-  Handle<Object> GetBoilerplateValue(Expression* expression);
-
   // Initialize the components of a for-in / for-of statement.
   void InitializeForEachStatement(ForEachStatement* stmt,
                                   Expression* each,
@@ -679,13 +648,14 @@ class Parser : public ParserBase {
                                   Statement* body);
 
   ZoneList<Expression*>* ParseArguments(bool* ok);
-  FunctionLiteral* ParseFunctionLiteral(Handle<String> var_name,
-                                        bool name_is_reserved,
-                                        bool is_generator,
-                                        int function_token_position,
-                                        FunctionLiteral::FunctionType type,
-                                        bool* ok);
-
+  FunctionLiteral* ParseFunctionLiteral(
+      Handle<String> name,
+      Scanner::Location function_name_location,
+      bool name_is_strict_reserved,
+      bool is_generator,
+      int function_token_position,
+      FunctionLiteral::FunctionType type,
+      bool* ok);
 
   // Magical syntax support.
   Expression* ParseV8Intrinsic(bool* ok);
@@ -720,7 +690,7 @@ class Parser : public ParserBase {
   Literal* GetLiteralUndefined(int position);
   Literal* GetLiteralTheHole(int position);
 
-  Handle<String> ParseIdentifier(bool* ok);
+  Handle<String> ParseIdentifier(AllowEvalOrArgumentsAsIdentifier, bool* ok);
   Handle<String> ParseIdentifierOrStrictReservedWord(
       bool* is_strict_reserved, bool* ok);
   Handle<String> ParseIdentifierName(bool* ok);
@@ -735,7 +705,6 @@ class Parser : public ParserBase {
 
   // Strict mode validation of LValue expressions
   void CheckStrictModeLValue(Expression* expression,
-                             const char* error,
                              bool* ok);
 
   // For harmony block scoping mode: Check if the scope has conflicting var/let

@@ -27,6 +27,7 @@
 #include <assert.h>
 #include <stdlib.h> /* abort */
 #include <string.h> /* strrchr */
+#include <fcntl.h>  /* O_CLOEXEC, may be */
 
 #if defined(__STRICT_ANSI__)
 # define inline __inline
@@ -111,6 +112,16 @@
 # define UV__POLLHUP  8
 #endif
 
+#if !defined(O_CLOEXEC) && defined(__FreeBSD__)
+/*
+ * It may be that we are just missing `__POSIX_VISIBLE >= 200809`.
+ * Try using fixed value const and give up, if it doesn't work
+ */
+# define O_CLOEXEC 0x00100000
+#endif
+
+typedef struct uv__stream_queued_fds_s uv__stream_queued_fds_t;
+
 /* handle flags */
 enum {
   UV_CLOSING              = 0x01,   /* uv_close() called but not finished. */
@@ -132,6 +143,13 @@ typedef enum {
   UV_CLOCK_PRECISE = 0,  /* Use the highest resolution clock available. */
   UV_CLOCK_FAST = 1      /* Use the fastest clock with <= 1ms granularity. */
 } uv_clocktype_t;
+
+struct uv__stream_queued_fds_s {
+  unsigned int size;
+  unsigned int offset;
+  int fds[1];
+};
+
 
 /* core */
 int uv__nonblock(int fd, int set);
@@ -171,6 +189,8 @@ int uv__stream_try_select(uv_stream_t* stream, int* fd);
 #endif /* defined(__APPLE__) */
 void uv__server_io(uv_loop_t* loop, uv__io_t* w, unsigned int events);
 int uv__accept(int sockfd);
+int uv__dup2_cloexec(int oldfd, int newfd);
+int uv__open_cloexec(const char* path, int flags);
 
 /* tcp */
 int uv_tcp_listen(uv_tcp_t* tcp, int backlog, uv_connection_cb cb);
@@ -217,6 +237,7 @@ void uv__tcp_close(uv_tcp_t* handle);
 void uv__timer_close(uv_timer_t* handle);
 void uv__udp_close(uv_udp_t* handle);
 void uv__udp_finish_close(uv_udp_t* handle);
+uv_handle_type uv__handle_type(int fd);
 
 #if defined(__APPLE__)
 int uv___stream_fd(uv_stream_t* handle);

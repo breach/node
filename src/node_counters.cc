@@ -21,6 +21,8 @@
 
 #include "node_counters.h"
 #include "uv.h"
+#include "env.h"
+#include "env-inl.h"
 
 #include <string.h>
 
@@ -35,6 +37,7 @@ using v8::GCPrologueCallback;
 using v8::GCType;
 using v8::Handle;
 using v8::HandleScope;
+using v8::Isolate;
 using v8::Local;
 using v8::Object;
 using v8::String;
@@ -74,12 +77,16 @@ void COUNTER_HTTP_CLIENT_RESPONSE(const FunctionCallbackInfo<Value>&) {
 }
 
 
-static void counter_gc_start(GCType type, GCCallbackFlags flags) {
+static void counter_gc_start(Isolate* isolate,
+                             GCType type,
+                             GCCallbackFlags flags) {
   counter_gc_start_time = NODE_COUNT_GET_GC_RAWTIME();
 }
 
 
-static void counter_gc_done(GCType type, GCCallbackFlags flags) {
+static void counter_gc_done(Isolate* isolate,
+                            GCType type,
+                            GCCallbackFlags flags) {
   uint64_t endgc = NODE_COUNT_GET_GC_RAWTIME();
   if (endgc != 0) {
     uint64_t totalperiod = endgc - counter_gc_end_time;
@@ -96,8 +103,8 @@ static void counter_gc_done(GCType type, GCCallbackFlags flags) {
 }
 
 
-void InitPerfCounters(Handle<Object> target) {
-  HandleScope scope(node_isolate);
+void InitPerfCounters(Environment* env, Handle<Object> target) {
+  HandleScope scope(env->isolate());
 
   static struct {
     const char* name;
@@ -114,8 +121,9 @@ void InitPerfCounters(Handle<Object> target) {
   };
 
   for (int i = 0; i < ARRAY_SIZE(tab); i++) {
-    Local<String> key = OneByteString(node_isolate, tab[i].name);
-    Local<Value> val = FunctionTemplate::New(tab[i].func)->GetFunction();
+    Local<String> key = OneByteString(env->isolate(), tab[i].name);
+    Local<Value> val =
+        FunctionTemplate::New(env->isolate(), tab[i].func)->GetFunction();
     target->Set(key, val);
   }
 
@@ -127,8 +135,8 @@ void InitPerfCounters(Handle<Object> target) {
   counter_gc_start_time = NODE_COUNT_GET_GC_RAWTIME();
   counter_gc_end_time = counter_gc_start_time;
 
-  v8::V8::AddGCPrologueCallback(counter_gc_start);
-  v8::V8::AddGCEpilogueCallback(counter_gc_done);
+  env->isolate()->AddGCPrologueCallback(counter_gc_start);
+  env->isolate()->AddGCEpilogueCallback(counter_gc_done);
 }
 
 

@@ -46,9 +46,11 @@ class SignalWrap : public HandleWrap {
   static void Initialize(Handle<Object> target,
                          Handle<Value> unused,
                          Handle<Context> context) {
-    Local<FunctionTemplate> constructor = FunctionTemplate::New(New);
+    Environment* env = Environment::GetCurrent(context);
+    Local<FunctionTemplate> constructor = FunctionTemplate::New(env->isolate(),
+                                                                New);
     constructor->InstanceTemplate()->SetInternalFieldCount(1);
-    constructor->SetClassName(FIXED_ONE_BYTE_STRING(node_isolate, "Signal"));
+    constructor->SetClassName(FIXED_ONE_BYTE_STRING(env->isolate(), "Signal"));
 
     NODE_SET_PROTOTYPE_METHOD(constructor, "close", HandleWrap::Close);
     NODE_SET_PROTOTYPE_METHOD(constructor, "ref", HandleWrap::Ref);
@@ -56,7 +58,7 @@ class SignalWrap : public HandleWrap {
     NODE_SET_PROTOTYPE_METHOD(constructor, "start", Start);
     NODE_SET_PROTOTYPE_METHOD(constructor, "stop", Stop);
 
-    target->Set(FIXED_ONE_BYTE_STRING(node_isolate, "Signal"),
+    target->Set(FIXED_ONE_BYTE_STRING(env->isolate(), "Signal"),
                 constructor->GetFunction());
   }
 
@@ -72,7 +74,10 @@ class SignalWrap : public HandleWrap {
   }
 
   SignalWrap(Environment* env, Handle<Object> object)
-      : HandleWrap(env, object, reinterpret_cast<uv_handle_t*>(&handle_)) {
+      : HandleWrap(env,
+                   object,
+                   reinterpret_cast<uv_handle_t*>(&handle_),
+                   AsyncWrap::PROVIDER_SIGNALWRAP) {
     int r = uv_signal_init(env->event_loop(), &handle_);
     assert(r == 0);
   }
@@ -81,7 +86,8 @@ class SignalWrap : public HandleWrap {
   }
 
   static void Start(const FunctionCallbackInfo<Value>& args) {
-    HandleScope scope(node_isolate);
+    Environment* env = Environment::GetCurrent(args.GetIsolate());
+    HandleScope scope(env->isolate());
     SignalWrap* wrap = Unwrap<SignalWrap>(args.This());
 
     int signum = args[0]->Int32Value();
@@ -90,7 +96,8 @@ class SignalWrap : public HandleWrap {
   }
 
   static void Stop(const FunctionCallbackInfo<Value>& args) {
-    HandleScope scope(node_isolate);
+    Environment* env = Environment::GetCurrent(args.GetIsolate());
+    HandleScope scope(env->isolate());
     SignalWrap* wrap = Unwrap<SignalWrap>(args.This());
 
     int err = uv_signal_stop(&wrap->handle_);
@@ -103,7 +110,7 @@ class SignalWrap : public HandleWrap {
     HandleScope handle_scope(env->isolate());
     Context::Scope context_scope(env->context());
 
-    Local<Value> arg = Integer::New(signum, env->isolate());
+    Local<Value> arg = Integer::New(env->isolate(), signum);
     wrap->MakeCallback(env->onsignal_string(), 1, &arg);
   }
 
@@ -114,4 +121,4 @@ class SignalWrap : public HandleWrap {
 }  // namespace node
 
 
-NODE_MODULE_CONTEXT_AWARE(node_signal_wrap, node::SignalWrap::Initialize)
+NODE_MODULE_CONTEXT_AWARE_BUILTIN(signal_wrap, node::SignalWrap::Initialize)

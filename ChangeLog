@@ -1,3 +1,172 @@
+2014.03.11, Version 0.11.12 (Unstable)
+
+* uv: Upgrade to v0.11.22 (Timothy J Fontaine)
+
+* buffer: allow toString to accept Infinity for end (Brian White)
+
+* child_process: add spawnSync/execSync (Bert Belder, Timothy J Fontaine)
+
+* cluster: handle bind errors on Windows (Alexis Campailla)
+
+* contextify: handle infinite recursion errors (Fedor Indutny)
+
+* crypto: allow custom generator for DiffieHellman (Brian White)
+
+* crypto: allow setting add'l authenticated data (Brian White)
+
+* crypto: fix CipherFinal return value check (Brian White)
+
+* crypto: make NewSessionDoneCb public (Fedor Indutny)
+
+* dgram: pass the bytes sent to the send callback (Timothy J Fontaine)
+
+* dns: validate arguments in resolver (Kenan Sulayman)
+
+* dns: verify argument is valid function in resolve (Kenan Sulayman)
+
+* http: avoid duplicate keys in writeHead (David Björklund)
+
+* net: add localPort to connect options (Timothy J Fontaine)
+
+* node: do not print SyntaxError hints to stderr (Fedor Indutny)
+
+* node: invoke `beforeExit` again if loop was active (Fedor Indutny)
+
+* node: make AsyncListenerInst field more explicit (Trevor Norris)
+
+* os: networkInterfaces include scopeid for ipv6 (Xidorn Quan)
+
+* process: allow changing `exitCode` in `on('exit')` (Fedor Indutny)
+
+* readline: fix `line` event, if input emit 'end' (Yazhong Liu)
+
+* src: add tracing.v8.on('gc') statistics hooks (Ben Noordhuis)
+
+* src: add v8.getHeapStatistics() function (Ben Noordhuis)
+
+* src: emit 'beforeExit' event on process object (Ben Noordhuis)
+
+* src: move AsyncListener from process to tracing (Trevor Norris)
+
+* tls: fix crash in SNICallback (Fedor Indutny)
+
+* tls: introduce asynchronous `newSession` (Fedor Indutny)
+
+* util: show meaningful values for boxed primitives (Nathan Rajlich)
+
+* vm: don't copy Proxy object from parent context (Ben Noordhuis)
+
+* windows: make stdout/sterr pipes blocking (Alexis Campailla)
+
+* zlib: add sync versions for convenience methods (Nikolai Vavilov)
+
+
+2014.01.29, Version 0.11.11 (Unstable), b46e77421581ea358e221a8a843d057c747f7e90
+
+* v8: Upgrade to 3.22.24.19
+
+* http_parser: Upgrade to 2.2.1
+
+* openssl: Upgrade to 1.0.1f
+
+* uv: Upgrade to 0.11.18
+
+* async-listener: revamp of subsystem (Trevor Norris)
+
+* node: do not ever close stdio (Fedor Indutny)
+
+* http: use writev on chunked encoding (Trevor Norris)
+
+* async_wrap/timers: remove Add/RemoveAsyncListener (Trevor Norris)
+
+* child_process: better error reporting for exec (Fedor Indutny)
+
+* crypto: add newline to cert and key if not present (Fedor Indutny)
+
+* crypto: clear error in GetPeerCertificate (Fedor Indutny)
+
+* crypto: honor default ciphers in client mode (Jacob Hoffman-Andrews)
+
+* crypto: introduce .setEngine(engine, [flags]) (Fedor Indutny)
+
+* crypto: support custom pbkdf2 digest methods (Ben Noordhuis)
+
+* domain: fix off-by-one in Domain.exit() (Ryan Graham)
+
+* http: concatenate duplicate headers by default (Alex Kocharin)
+
+* http: do not emit EOF non-readable socket (Fedor Indutny)
+
+* node: fix argument parsing with -p arg (Alexis Campailla)
+
+* path: improve POSIX path.join() performance (Jo Liss)
+
+* tls: emit `clientError` on early socket close (Fedor Indutny)
+
+* tls: introduce `.setMaxSendFragment(size)` (Fedor Indutny)
+
+* tls: make cert/pfx optional in tls.createServer() (Ben Noordhuis)
+
+* tls: process accumulated input (Fedor Indutny)
+
+* tls: show human-readable error messages (Ben Noordhuis)
+
+* util: handle escaped forward slashes correctly (Tom Gallacher)
+
+
+2013.12.31, Version 0.11.10 (Unstable), 66931791f06207d1cdfea5ec1529edf3c94026d3
+
+* http_parser: update to 2.2
+
+* uv: Upgrade to v0.11.17
+
+* v8: Upgrade to 3.22.24.10
+
+* buffer: optimize writeInt* methods (Paul Loyd)
+
+* child_process: better error handling (Alexis Campailla)
+
+* cluster: do not synchronously emit 'setup' event (Sam Roberts)
+
+* cluster: restore backwards compatibility and various fixes (Sam Roberts)
+
+* crypto: remove unnecessary OpenSSL_add_all_digests (Yorkie)
+
+* crypto: support GCM authenticated encryption mode. (Ingmar Runge)
+
+* dns: add resolveSoa and 'SOA' rrtype (Tuğrul Topuz)
+
+* events: move EE c'tor guts to EventEmitter.init (Bert Belder)
+
+* http: DELETE shouldn't default to chunked encoding (Lalit Kapoor)
+
+* http: parse the status message in a http response. (Cam Swords)
+
+* node: fix removing AsyncListener in callback (Vladimir Kurchatkin)
+
+* node: follow specification, zero-fill ArrayBuffers (Trevor Norris)
+
+* openssl: use ASM optimized routines (Fedor Indutny)
+
+* process: allow nextTick infinite recursion (Trevor Norris)
+
+* querystring: remove `name` from `stringify()` (Yorkie)
+
+* timers: setImmediate v8 optimization fix (pflannery)
+
+* tls: add serialNumber to getPeerCertificate() (Ben Noordhuis)
+
+* tls: reintroduce socket.encrypted (Fedor Indutny)
+
+* tls: fix handling of asterisk in SNI context (Fedor Indutny)
+
+* util: Format negative zero as '-0' (David Chan)
+
+* vm: fix race condition in timeout (Alexis Campailla)
+
+* windows: fix dns lookup of localhost with ipv6 (Alexis Campailla)
+
+
 2013.11.20, Version 0.11.9 (Unstable), dcfd032bdd69dfb38c120e18438d6316ae522edc
 
 * uv: upgrade to v0.11.15 (Timothy J Fontaine)
@@ -390,6 +559,54 @@
 * util: custom `inspect()` method may return an Object (Nathan Rajlich)
 
 * console: `console.dir()` bypasses inspect() methods (Nathan Rajlich)
+
+
+2014.02.18, Version 0.10.26 (Stable), cc56c62ed879ad4f93b1fdab3235c43e60f48b7e
+
+* uv: Upgrade to v0.10.25 (Timothy J Fontaine)
+
+* npm: upgrade to 1.4.3 (isaacs)
+
+* v8: support compiling with VS2013 (Fedor Indutny)
+
+* cares: backport TXT parsing fix (Fedor Indutny)
+
+* crypto: throw on SignFinal failure (Fedor Indutny)
+
+* crypto: update root certificates (Ben Noordhuis)
+
+* debugger: Fix breakpoint not showing after restart (Farid Neshat)
+
+* fs: make unwatchFile() insensitive to path (iamdoron)
+
+* net: do not re-emit stream errors (Fedor Indutny)
+
+* net: make Socket destroy() re-entrance safe (Jun Ma)
+
+* net: reset `endEmitted` on reconnect (Fedor Indutny)
+
+* node: do not close stdio implicitly (Fedor Indutny)
+
+* zlib: avoid assertion in close (Fedor Indutny)
+
+
+2014.01.23, Version 0.10.25 (Stable), b0e5f195dfce3e2b99f5091373d49f6616682596
+
+* uv: Upgrade to v0.10.23
+
+* npm: Upgrade to v1.3.24
+
+* v8: Fix enumeration for objects with lots of properties
+
+* child_process: fix spawn() optional arguments (Sam Roberts)
+
+* cluster: report more errors to workers (Fedor Indutny)
+
+* domains: exit() only affects active domains (Ryan Graham)
+
+* src: OnFatalError handler must abort() (Timothy J Fontaine)
+
+* stream: writes may return false but forget to emit drain (Yang Tianyang)
 
 
 2013.12.18, Version 0.10.24 (Stable), b7fd6bc899ccb629d790c47aee06aba87e535c41

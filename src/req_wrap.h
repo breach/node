@@ -37,8 +37,13 @@ extern QUEUE req_wrap_queue;
 template <typename T>
 class ReqWrap : public AsyncWrap {
  public:
-  ReqWrap(Environment* env, v8::Handle<v8::Object> object)
-      : AsyncWrap(env, object) {
+  ReqWrap(Environment* env,
+          v8::Handle<v8::Object> object,
+          AsyncWrap::ProviderType provider = AsyncWrap::PROVIDER_REQWRAP)
+      : AsyncWrap(env, object, AsyncWrap::PROVIDER_REQWRAP) {
+    if (env->in_domain())
+      object->Set(env->domain_string(), env->domain_array()->Get(0));
+
     QUEUE_INSERT_TAIL(&req_wrap_queue, &req_wrap_queue_);
   }
 
@@ -48,7 +53,7 @@ class ReqWrap : public AsyncWrap {
     // Assert that someone has called Dispatched()
     assert(req_.data == this);
     assert(!persistent().IsEmpty());
-    persistent().Dispose();
+    persistent().Reset();
   }
 
   // Call this after the req has been dispatched.

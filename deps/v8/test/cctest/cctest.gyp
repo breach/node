@@ -47,6 +47,8 @@
         'gay-fixed.cc',
         'gay-precision.cc',
         'gay-shortest.cc',
+        'print-extension.cc',
+        'profiler-extension.cc',
         'test-accessors.cc',
         'test-alloc.cc',
         'test-api.cc',
@@ -80,21 +82,24 @@
         'test-hashmap.cc',
         'test-heap.cc',
         'test-heap-profiler.cc',
+        'test-libplatform-task-queue.cc',
+        'test-libplatform-worker-thread.cc',
         'test-list.cc',
         'test-liveedit.cc',
         'test-lockers.cc',
         'test-log.cc',
         'test-mark-compact.cc',
+        'test-mementos.cc',
         'test-mutex.cc',
         'test-object-observe.cc',
         'test-parsing.cc',
         'test-platform.cc',
         'test-platform-tls.cc',
         'test-profile-generator.cc',
-        'test-random.cc',
         'test-random-number-generator.cc',
         'test-regexp.cc',
         'test-reloc-info.cc',
+        'test-representation.cc',
         'test-semaphore.cc',
         'test-serialize.cc',
         'test-socket.cc',
@@ -112,7 +117,8 @@
         'test-version.cc',
         'test-weakmaps.cc',
         'test-weaksets.cc',
-        'test-weaktypedarrays.cc'
+        'test-weaktypedarrays.cc',
+        'trace-extension.cc'
       ],
       'conditions': [
         ['v8_target_arch=="ia32"', {
@@ -122,6 +128,7 @@
             'test-code-stubs-ia32.cc',
             'test-cpu-ia32.cc',
             'test-disasm-ia32.cc',
+            'test-macro-assembler-ia32.cc',
             'test-log-stack-tracer.cc'
           ],
         }],
@@ -147,11 +154,13 @@
         ['v8_target_arch=="mipsel"', {
           'sources': [
             'test-assembler-mips.cc',
+            'test-code-stubs.cc',
+            'test-code-stubs-mips.cc',
             'test-disasm-mips.cc',
             'test-macro-assembler-mips.cc'
           ],
         }],
-        [ 'OS=="linux"', {
+        [ 'OS=="linux" or OS=="qnx"', {
           'sources': [
             'test-platform-linux.cc',
           ],

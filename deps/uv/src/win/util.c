@@ -36,6 +36,7 @@
 #include <iphlpapi.h>
 #include <psapi.h>
 #include <tlhelp32.h>
+#include <windows.h>
 
 
 /*
@@ -162,12 +163,12 @@ int uv_exepath(char* buffer, size_t* size_ptr) {
 }
 
 
-int uv_cwd(char* buffer, size_t size) {
+int uv_cwd(char* buffer, size_t* size) {
   DWORD utf16_len;
   WCHAR utf16_buffer[MAX_PATH];
   int r;
 
-  if (buffer == NULL || size == 0) {
+  if (buffer == NULL || size == NULL) {
     return UV_EINVAL;
   }
 
@@ -191,19 +192,36 @@ int uv_cwd(char* buffer, size_t size) {
     utf16_buffer[utf16_len] = L'\0';
   }
 
+  /* Check how much space we need */
+  r = WideCharToMultiByte(CP_UTF8,
+                          0,
+                          utf16_buffer,
+                          -1,
+                          NULL,
+                          0,
+                          NULL,
+                          NULL);
+  if (r == 0) {
+    return uv_translate_sys_error(GetLastError());
+  } else if (r > (int) *size) {
+    *size = r;
+    return UV_ENOBUFS;
+  }
+
   /* Convert to UTF-8 */
   r = WideCharToMultiByte(CP_UTF8,
                           0,
                           utf16_buffer,
                           -1,
                           buffer,
-                          size > INT_MAX ? INT_MAX : (int) size,
+                          *size > INT_MAX ? INT_MAX : (int) *size,
                           NULL,
                           NULL);
   if (r == 0) {
     return uv_translate_sys_error(GetLastError());
   }
 
+  *size = r;
   return 0;
 }
 
@@ -322,7 +340,7 @@ int uv_parent_pid() {
   int parent_pid = -1;
   HANDLE handle;
   PROCESSENTRY32 pe;
-  int current_pid = GetCurrentProcessId();
+  DWORD current_pid = GetCurrentProcessId();
 
   pe.dwSize = sizeof(PROCESSENTRY32);
   handle = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -637,7 +655,7 @@ int uv_cpu_info(uv_cpu_info_t** cpu_infos_ptr, int* cpu_count_ptr) {
     DWORD cpu_speed_size = sizeof(cpu_speed);
     WCHAR cpu_brand[256];
     DWORD cpu_brand_size = sizeof(cpu_brand);
-    int len;
+    size_t len;
 
     len = _snwprintf(key_name,
                      ARRAY_SIZE(key_name),
@@ -987,4 +1005,40 @@ int uv_interface_addresses(uv_interface_address_t** addresses_ptr,
 void uv_free_interface_addresses(uv_interface_address_t* addresses,
     int count) {
   free(addresses);
+}
+
+
+int uv_getrusage(uv_rusage_t *uv_rusage) {
+  FILETIME createTime, exitTime, kernelTime, userTime;
+  SYSTEMTIME kernelSystemTime, userSystemTime;
+  int ret;
+
+  ret = GetProcessTimes(GetCurrentProcess(), &createTime, &exitTime, &kernelTime, &userTime);
+  if (ret == 0) {
+    return uv_translate_sys_error(GetLastError());
+  }
+
+  ret = FileTimeToSystemTime(&kernelTime, &kernelSystemTime);
+  if (ret == 0) {
+    return uv_translate_sys_error(GetLastError());
+  }
+
+  ret = FileTimeToSystemTime(&userTime, &userSystemTime);
+  if (ret == 0) {
+    return uv_translate_sys_error(GetLastError());
+  }
+
+  memset(uv_rusage, 0, sizeof(*uv_rusage));
+
+  uv_rusage->ru_utime.tv_sec = userSystemTime.wHour * 3600 +
+                               userSystemTime.wMinute * 60 +
+                               userSystemTime.wSecond;
+  uv_rusage->ru_utime.tv_usec = userSystemTime.wMilliseconds * 1000;
+
+  uv_rusage->ru_stime.tv_sec = kernelSystemTime.wHour * 3600 +
+                               kernelSystemTime.wMinute * 60 +
+                               kernelSystemTime.wSecond;
+  uv_rusage->ru_stime.tv_usec = kernelSystemTime.wMilliseconds * 1000;
+
+  return 0;
 }

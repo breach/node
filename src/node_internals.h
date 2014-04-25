@@ -22,7 +22,7 @@
 #ifndef SRC_NODE_INTERNALS_H_
 #define SRC_NODE_INTERNALS_H_
 
-#include "env.h"
+#include "node.h"
 #include "util.h"
 #include "util-inl.h"
 #include "uv.h"
@@ -36,10 +36,10 @@ struct sockaddr;
 
 namespace node {
 
-// Defined in node.cc
-extern v8::Isolate* node_isolate;
+// Forward declaration
+class Environment;
 
-// If persistent.IsWeak() == false, then do not call persistent.Dispose()
+// If persistent.IsWeak() == false, then do not call persistent.Reset()
 // while the returned Local<T> is still in scope, it will destroy the
 // reference to the object.
 template <class TypeName>
@@ -49,29 +49,29 @@ inline v8::Local<TypeName> PersistentToLocal(
 
 // Call with valid HandleScope and while inside Context scope.
 v8::Handle<v8::Value> MakeCallback(Environment* env,
-                                   v8::Handle<v8::Object> object,
+                                   v8::Handle<v8::Object> recv,
                                    const char* method,
                                    int argc = 0,
                                    v8::Handle<v8::Value>* argv = NULL);
 
 // Call with valid HandleScope and while inside Context scope.
 v8::Handle<v8::Value> MakeCallback(Environment* env,
-                                   const v8::Handle<v8::Object> object,
+                                   v8::Handle<v8::Object> recv,
                                    uint32_t index,
                                    int argc = 0,
                                    v8::Handle<v8::Value>* argv = NULL);
 
 // Call with valid HandleScope and while inside Context scope.
 v8::Handle<v8::Value> MakeCallback(Environment* env,
-                                   const v8::Handle<v8::Object> object,
-                                   const v8::Handle<v8::String> symbol,
+                                   v8::Handle<v8::Object> recv,
+                                   v8::Handle<v8::String> symbol,
                                    int argc = 0,
                                    v8::Handle<v8::Value>* argv = NULL);
 
 // Call with valid HandleScope and while inside Context scope.
 v8::Handle<v8::Value> MakeCallback(Environment* env,
-                                   const v8::Handle<v8::Object> object,
-                                   const v8::Handle<v8::Function> callback,
+                                   v8::Handle<v8::Value> recv,
+                                   v8::Handle<v8::Function> callback,
                                    int argc = 0,
                                    v8::Handle<v8::Value>* argv = NULL);
 
@@ -120,44 +120,13 @@ inline static int snprintf(char* buf, unsigned int len, const char* fmt, ...) {
 # define NO_RETURN
 #endif
 
-// this would have been a template function were it not for the fact that g++
-// sometimes fails to resolve it...
-#define THROW_ERROR(fun)                                                      \
-  do {                                                                        \
-    v8::HandleScope scope(node_isolate);                                      \
-    v8::ThrowException(fun(OneByteString(node_isolate, errmsg)));             \
-  }                                                                           \
-  while (0)
-
-inline static void ThrowError(const char* errmsg) {
-  THROW_ERROR(v8::Exception::Error);
-}
-
-inline static void ThrowTypeError(const char* errmsg) {
-  THROW_ERROR(v8::Exception::TypeError);
-}
-
-inline static void ThrowRangeError(const char* errmsg) {
-  THROW_ERROR(v8::Exception::RangeError);
-}
-
-inline static void ThrowErrnoException(int errorno,
-                                       const char* syscall = NULL,
-                                       const char* message = NULL,
-                                       const char* path = NULL) {
-  v8::ThrowException(ErrnoException(errorno, syscall, message, path));
-}
-
-inline static void ThrowUVException(int errorno,
-                                    const char* syscall = NULL,
-                                    const char* message = NULL,
-                                    const char* path = NULL) {
-  v8::ThrowException(UVException(errorno, syscall, message, path));
-}
+void AppendExceptionLine(Environment* env,
+                         v8::Handle<v8::Value> er,
+                         v8::Handle<v8::Message> message);
 
 NO_RETURN void FatalError(const char* location, const char* message);
 
-v8::Local<v8::Object> BuildStatsObject(Environment* env, const uv_stat_t* s);
+v8::Local<v8::Value> BuildStatsObject(Environment* env, const uv_stat_t* s);
 
 enum Endianness {
   kLittleEndian,  // _Not_ LITTLE_ENDIAN, clashes with endian.h.
@@ -200,6 +169,52 @@ inline MUST_USE_RESULT bool ParseArrayIndex(v8::Handle<v8::Value> arg,
   *ret = static_cast<size_t>(tmp_i);
   return true;
 }
+
+void ThrowError(v8::Isolate* isolate, const char* errmsg);
+void ThrowTypeError(v8::Isolate* isolate, const char* errmsg);
+void ThrowRangeError(v8::Isolate* isolate, const char* errmsg);
+void ThrowErrnoException(v8::Isolate* isolate,
+                         int errorno,
+                         const char* syscall = NULL,
+                         const char* message = NULL,
+                         const char* path = NULL);
+void ThrowUVException(v8::Isolate* isolate,
+                      int errorno,
+                      const char* syscall = NULL,
+                      const char* message = NULL,
+                      const char* path = NULL);
+
+NODE_DEPRECATED("Use ThrowError(isolate)",
+                inline void ThrowError(const char* errmsg) {
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
+  return ThrowError(isolate, errmsg);
+})
+NODE_DEPRECATED("Use ThrowTypeError(isolate)",
+                inline void ThrowTypeError(const char* errmsg) {
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
+  return ThrowTypeError(isolate, errmsg);
+})
+NODE_DEPRECATED("Use ThrowRangeError(isolate)",
+                inline void ThrowRangeError(const char* errmsg) {
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
+  return ThrowRangeError(isolate, errmsg);
+})
+NODE_DEPRECATED("Use ThrowErrnoException(isolate)",
+                inline void ThrowErrnoException(int errorno,
+                                                const char* syscall = NULL,
+                                                const char* message = NULL,
+                                                const char* path = NULL) {
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
+  return ThrowErrnoException(isolate, errorno, syscall, message, path);
+})
+NODE_DEPRECATED("Use ThrowUVException(isolate)",
+                inline void ThrowUVException(int errorno,
+                                             const char* syscall = NULL,
+                                             const char* message = NULL,
+                                             const char* path = NULL) {
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
+  return ThrowUVException(isolate, errorno, syscall, message, path);
+})
 
 }  // namespace node
 

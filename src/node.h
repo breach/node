@@ -189,7 +189,7 @@ Environment* CreateEnvironment(v8::Isolate* isolate,
 v8::Local<v8::Context> EnvironmentContext(Environment*);
 v8::Isolate* EnvironmentIsolate(Environment*);
 
-void EmitExit(Environment *env);
+int EmitExit(Environment *env);
 void RunAtExit(Environment *env);
 
 /* Converts a unixtime to V8 Date */

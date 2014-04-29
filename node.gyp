@@ -72,14 +72,43 @@
 
   'targets': [
     {
+      'target_name': 'node',
+      'type': 'executable',
+      'dependencies': [ 'node_base', 'node_js2c#host', ],
+      'sources': [
+        'src/force_modules.h',
+        'src/node_main.cc',
+      ],
+      'include_dirs': [
+        'src',
+        'tools/msvs/genfiles',
+        'deps/uv/src/ares',
+        'deps/v8/include',
+        'deps/uv/include/',
+        'deps/cares/include',
+        'deps/zlib',
+        '<(SHARED_INTERMEDIATE_DIR)' # for node_natives.h
+      ],
+      'defines': [
+        'NODE_WANT_INTERNALS=1',
+        'ARCH="<(target_arch)"',
+        'PLATFORM="<(OS)"',
+        'NODE_TAG="<(node_tag)"',
+      ],
+    },
+
+    {
       'target_name': 'node_base',
       'type': 'static_library',
+
       'dependencies': [
         'node_js2c#host',
       ],
 
       'include_dirs': [
         'src',
+        'tools/msvs/genfiles',
+        'deps/uv/src/ares',
         '<(SHARED_INTERMEDIATE_DIR)' # for node_natives.h
       ],
 
@@ -172,19 +201,15 @@
             'src/tls_wrap.cc',
             'src/tls_wrap.h'
           ],
-
           'conditions': [
             [ 'node_shared_openssl=="false"', {
-              'dependencies': [ 
-                'deps/openssl/openssl.gyp:openssl',
+              'dependencies': [
+                './deps/openssl/openssl.gyp:openssl',
 
                 # For tests
                 './deps/openssl/openssl.gyp:openssl-cli'
               ],
-            }, {
-              'include_dirs': [ '<(shared_openssl_include_dir)' ],
-            }],
-          ]
+            }]]
         }, {
           'defines': [ 'HAVE_OPENSSL=0' ]
         }],
@@ -259,7 +284,6 @@
             'tools/msvs/genfiles/node_perfctr_provider.rc',
           ]
         } ],
-
         [ 'v8_postmortem_support=="true"', {
           'dependencies': [ 'deps/v8/tools/gyp/v8.gyp:postmortem-metadata' ],
         }],
@@ -269,37 +293,22 @@
             'deps/v8/include/v8-debug.h',
           ],
           'dependencies': [ 'deps/v8/tools/gyp/v8.gyp:v8' ],
-          'include_dirs': [ 'deps/v8/include' ],
-        }, {
-          'include_dirs': [ '<(shared_v8_include_dir)' ],
         }],
 
         [ 'node_shared_zlib=="false"', {
           'dependencies': [ 'deps/zlib/zlib.gyp:zlib' ],
-          'include_dirs': [ 'deps/zlib' ],
-        }, {
-          'include_dirs': [ '<(shared_zlib_include_dir)' ],
         }],
 
         [ 'node_shared_http_parser=="false"', {
           'dependencies': [ 'deps/http_parser/http_parser.gyp:http_parser' ],
-          'include_dirs': [ 'deps/http_parser' ],
-        }, {
-          'include_dirs': [ '<(shared_http_parser_include_dir)' ],
         }],
 
         [ 'node_shared_cares=="false"', {
           'dependencies': [ 'deps/cares/cares.gyp:cares' ],
-          'include_dirs': [ 'deps/cares/include' ],
-        }, {
-          'include_dirs': [ '<(shared_cares_include_dir)' ],
         }],
 
         [ 'node_shared_libuv=="false"', {
           'dependencies': [ 'deps/uv/uv.gyp:libuv' ],
-          'include_dirs': [ 'deps/uv/include' ],
-        }, {
-          'include_dirs': [ '<(shared_libuv_include_dir)' ],
         }],
 
         [ 'OS=="win"', {
@@ -325,59 +334,6 @@
             'PLATFORM="darwin"',
           ],
         }],
-      ],
-      'msvs_settings': {
-        'VCLinkerTool': {
-          'SubSystem': 1, # /subsystem:console
-        },
-      },
-    },
-
-    {
-      'target_name': 'node',
-      'type': 'executable',
-      'dependencies': [
-        'node_base',
-      ],
-      'include_dirs': [
-        'src',
-        'tools/msvs/genfiles',
-        'deps/uv/src/ares',
-      ],
-      'sources': [
-        'src/node_main.cc',
-      ],
-      'conditions': [
-        [ 'node_use_openssl=="true"', {
-          'conditions': [
-            [ 'node_shared_openssl=="false"', {
-              'dependencies': [ 'deps/openssl/openssl.gyp:openssl' ],
-            }],
-          ]
-        }],
-        [ 'v8_postmortem_support=="true"', {
-          'dependencies': [ 'deps/v8/tools/gyp/v8.gyp:postmortem-metadata' ],
-        }],
-        [ 'node_shared_v8=="false"', {
-          'dependencies': [ 'deps/v8/tools/gyp/v8.gyp:v8' ],
-        }],
-
-        [ 'node_shared_zlib=="false"', {
-          'dependencies': [ 'deps/zlib/zlib.gyp:zlib' ],
-        }],
-
-        [ 'node_shared_http_parser=="false"', {
-          'dependencies': [ 'deps/http_parser/http_parser.gyp:http_parser' ],
-        }],
-
-        [ 'node_shared_cares=="false"', {
-          'dependencies': [ 'deps/cares/cares.gyp:cares' ],
-        }],
-
-        [ 'node_shared_libuv=="false"', {
-          'dependencies': [ 'deps/uv/uv.gyp:libuv' ],
-        }],
-
         [ 'OS=="freebsd"', {
           'libraries': [
             '-lutil',
@@ -411,7 +367,6 @@
         },
       },
     },
-
     # generate ETW header and resource files
     {
       'target_name': 'node_etw',

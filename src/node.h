@@ -188,6 +188,7 @@ Environment* CreateEnvironment(v8::Isolate* isolate,
                                v8::ExtensionConfiguration* extensions);
 v8::Local<v8::Context> EnvironmentContext(Environment*);
 v8::Isolate* EnvironmentIsolate(Environment*);
+void EnvironmentDispose(Environment*);
 
 int EmitExit(Environment *env);
 void RunAtExit(Environment *env);
@@ -387,6 +388,7 @@ extern "C" NODE_EXTERN void node_module_register(void* mod);
   }
 
 #define NODE_MODULE_CONTEXT_AWARE_X(modname, regfunc, priv, flags)    \
+  void _nop_ ## modname(void) {};                                     \
   extern "C" {                                                        \
     static node::node_module _module =                                \
     {                                                                 \

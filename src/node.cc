@@ -3568,6 +3568,10 @@ v8::Isolate* EnvironmentIsolate(Environment *env) {
   return env->isolate();
 }
 
+void EnvironmentDispose(Environment *env) {
+  return env->Dispose();
+}
+
 void SetupIsolate() {
   // Needs to be setup here again
   node_isolate = Isolate::GetCurrent();

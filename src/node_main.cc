@@ -21,6 +21,8 @@
 
 #include "node.h"
 
+#include "force_modules.h"
+
 #ifdef _WIN32
 int wmain(int argc, wchar_t *wargv[]) {
   // Convert argv to to UTF8

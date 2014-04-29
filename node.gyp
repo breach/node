@@ -293,22 +293,32 @@
             'deps/v8/include/v8-debug.h',
           ],
           'dependencies': [ 'deps/v8/tools/gyp/v8.gyp:v8' ],
+        }, {
+          'include_dirs': [ '<(shared_v8_include_dir)' ],
         }],
 
         [ 'node_shared_zlib=="false"', {
           'dependencies': [ 'deps/zlib/zlib.gyp:zlib' ],
+        }, {
+          'include_dirs': [ '<(shared_zlib_include_dir)' ],
         }],
 
         [ 'node_shared_http_parser=="false"', {
           'dependencies': [ 'deps/http_parser/http_parser.gyp:http_parser' ],
+        }, {
+          'include_dirs': [ '<(shared_http_parser_include_dir)' ],
         }],
 
         [ 'node_shared_cares=="false"', {
           'dependencies': [ 'deps/cares/cares.gyp:cares' ],
+        }, {
+          'include_dirs': [ '<(shared_cares_include_dir)' ],
         }],
 
         [ 'node_shared_libuv=="false"', {
           'dependencies': [ 'deps/uv/uv.gyp:libuv' ],
+        }, {
+          'include_dirs': [ '<(shared_libuv_include_dir)' ],
         }],
 
         [ 'OS=="win"', {

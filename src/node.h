@@ -171,6 +171,28 @@ NODE_EXTERN extern bool no_deprecation;
 
 NODE_EXTERN int Start(int argc, char *argv[]);
 
+void Init(int* argc, 
+          const char** argv,
+          int* exec_argc, 
+          const char*** exec_argv);
+
+void SetupIsolate();
+
+class Environment;
+
+Environment* CreateEnvironment(v8::Isolate* isolate,
+                               int argc,
+                               const char* const* argv,
+                               int exec_argc,
+                               const char* const* exec_argv,
+                               v8::ExtensionConfiguration* extensions);
+v8::Local<v8::Context> EnvironmentContext(Environment*);
+v8::Isolate* EnvironmentIsolate(Environment*);
+void EnvironmentDispose(Environment*);
+
+int EmitExit(Environment *env);
+void RunAtExit(Environment *env);
+
 /* Converts a unixtime to V8 Date */
 #define NODE_UNIXTIME_V8(t) v8::Date::New(v8::Isolate::GetCurrent(),          \
     1000 * static_cast<double>(t))
@@ -368,6 +390,7 @@ extern "C" NODE_EXTERN void node_module_register(void* mod);
   }
 
 #define NODE_MODULE_CONTEXT_AWARE_X(modname, regfunc, priv, flags)    \
+  void _nop_ ## modname(void) {};                                     \
   extern "C" {                                                        \
     static node::node_module _module =                                \
     {                                                                 \

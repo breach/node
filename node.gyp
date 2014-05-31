@@ -74,6 +74,32 @@
     {
       'target_name': 'node',
       'type': 'executable',
+      'dependencies': [ 'node_base', 'node_js2c#host', ],
+      'sources': [
+        'src/force_modules.h',
+        'src/node_main.cc',
+      ],
+      'include_dirs': [
+        'src',
+        'tools/msvs/genfiles',
+        'deps/uv/src/ares',
+        'deps/v8/include',
+        'deps/uv/include/',
+        'deps/cares/include',
+        'deps/zlib',
+        '<(SHARED_INTERMEDIATE_DIR)' # for node_natives.h
+      ],
+      'defines': [
+        'NODE_WANT_INTERNALS=1',
+        'ARCH="<(target_arch)"',
+        'PLATFORM="<(OS)"',
+        'NODE_TAG="<(node_tag)"',
+      ],
+    },
+
+    {
+      'target_name': 'node_base',
+      'type': 'static_library',
 
       'dependencies': [
         'node_js2c#host',
@@ -97,7 +123,6 @@
         'src/node_file.cc',
         'src/node_http_parser.cc',
         'src/node_javascript.cc',
-        'src/node_main.cc',
         'src/node_os.cc',
         'src/node_v8.cc',
         'src/node_stat_watcher.cc',
@@ -268,22 +293,32 @@
             'deps/v8/include/v8-debug.h',
           ],
           'dependencies': [ 'deps/v8/tools/gyp/v8.gyp:v8' ],
+        }, {
+          'include_dirs': [ '<(shared_v8_include_dir)' ],
         }],
 
         [ 'node_shared_zlib=="false"', {
           'dependencies': [ 'deps/zlib/zlib.gyp:zlib' ],
+        }, {
+          'include_dirs': [ '<(shared_zlib_include_dir)' ],
         }],
 
         [ 'node_shared_http_parser=="false"', {
           'dependencies': [ 'deps/http_parser/http_parser.gyp:http_parser' ],
+        }, {
+          'include_dirs': [ '<(shared_http_parser_include_dir)' ],
         }],
 
         [ 'node_shared_cares=="false"', {
           'dependencies': [ 'deps/cares/cares.gyp:cares' ],
+        }, {
+          'include_dirs': [ '<(shared_cares_include_dir)' ],
         }],
 
         [ 'node_shared_libuv=="false"', {
           'dependencies': [ 'deps/uv/uv.gyp:libuv' ],
+        }, {
+          'include_dirs': [ '<(shared_libuv_include_dir)' ],
         }],
 
         [ 'OS=="win"', {

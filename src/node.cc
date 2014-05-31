@@ -116,6 +116,7 @@ using v8::Uint32;
 using v8::V8;
 using v8::Value;
 using v8::kExternalUnsignedIntArray;
+using v8::ExtensionConfiguration;
 
 // FIXME(bnoordhuis) Make these per-context?
 QUEUE handle_wrap_queue = { &handle_wrap_queue, &handle_wrap_queue };
@@ -3519,10 +3520,11 @@ Environment* CreateEnvironment(Isolate* isolate,
                                int argc,
                                const char* const* argv,
                                int exec_argc,
-                               const char* const* exec_argv) {
+                               const char* const* exec_argv,
+                               ExtensionConfiguration *extensions) {
   HandleScope handle_scope(isolate);
 
-  Local<Context> context = Context::New(isolate);
+  Local<Context> context = Context::New(isolate, extensions);
   Context::Scope context_scope(context);
   Environment* env = Environment::New(context);
 
@@ -3561,6 +3563,22 @@ Environment* CreateEnvironment(Isolate* isolate,
   return env;
 }
 
+v8::Local<v8::Context> EnvironmentContext(Environment *env) {
+  return env->context();
+}
+
+v8::Isolate* EnvironmentIsolate(Environment *env) {
+  return env->isolate();
+}
+
+void EnvironmentDispose(Environment *env) {
+  return env->Dispose();
+}
+
+void SetupIsolate() {
+  // Needs to be setup here again
+  node_isolate = Isolate::GetCurrent();
+}
 
 int Start(int argc, char** argv) {
 #if !defined(_WIN32)
@@ -3590,7 +3608,7 @@ int Start(int argc, char** argv) {
   {
     Locker locker(node_isolate);
     Environment* env =
-        CreateEnvironment(node_isolate, argc, argv, exec_argc, exec_argv);
+        CreateEnvironment(node_isolate, argc, argv, exec_argc, exec_argv, NULL);
     // Assign env to the debugger's context
     if (debugger_running) {
       HandleScope scope(env->isolate());
